@@ -6,6 +6,8 @@ import torch
 
 plt.rcParams["font.sans-serif"] = ["SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
+plt.rcParams["axes.formatter.use_mathtext"] = True
+plt.rcParams["mathtext.fontset"] = "stix"
 
 
 def tensor_to_numpy(image, padding):
@@ -71,6 +73,7 @@ def plot_convergence(history, save_path):
         axis.grid(True, alpha=0.3)
         if key in ("total", "amplitude", "histogram", "background"):
             axis.set_yscale("log")
+            axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: "{:.0e}".format(value)))
     fig.tight_layout()
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
