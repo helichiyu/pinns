@@ -47,3 +47,7 @@ def dynamic_contour(prediction, sigma, threshold):
 def background_loss(prediction, contour):
     outside = 1.0 - contour.detach()
     return torch.mean((outside * prediction).square())
+
+
+def contour_area_ratio_loss(contour, target_ratio):
+    return F.mse_loss(contour.mean(), target_ratio)

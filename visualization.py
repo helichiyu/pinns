@@ -3,11 +3,11 @@ import csv
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.ticker import NullFormatter
 
 plt.rcParams["font.sans-serif"] = ["SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
-plt.rcParams["axes.formatter.use_mathtext"] = True
-plt.rcParams["mathtext.fontset"] = "stix"
+plt.rcParams["axes.formatter.use_mathtext"] = False
 
 
 def tensor_to_numpy(image, padding):
@@ -51,11 +51,31 @@ def plot_spectra(source, prediction, save_path):
     plt.close(fig)
 
 
-def plot_support(contour, padding, save_path):
-    fig, axis = plt.subplots(figsize=(5, 5))
-    axis.imshow(tensor_to_numpy(contour, padding), cmap="gray", vmin=0, vmax=1)
-    axis.set_title("最终输出的动态粗轮廓", fontsize=13)
-    axis.axis("off")
+def plot_support(source_contour, prediction_contour, padding, save_path):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    panels = ((source_contour, "原图粗轮廓（仅展示/占比目标）"),
+              (prediction_contour, "最终输出的动态粗轮廓"))
+    for axis, (contour, title) in zip(axes, panels):
+        axis.imshow(tensor_to_numpy(contour, padding), cmap="gray", vmin=0, vmax=1)
+        axis.set_title(title, fontsize=13)
+        axis.axis("off")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_source_contour_explanation(source, contour, padding, ratio, save_path):
+    source_image = tensor_to_numpy(source, padding)
+    contour_image = tensor_to_numpy(contour, padding)
+    binary_contour = (contour_image > 0.5).astype(np.float32)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    panels = ((source_image, "原图（反转后，背景为 0）"),
+              (contour_image, "高斯模糊后的软粗轮廓"),
+              (binary_contour, "二值粗轮廓，占比 {:.2%}".format(ratio)))
+    for axis, (image, title) in zip(axes, panels):
+        axis.imshow(image, cmap="gray", vmin=0, vmax=1)
+        axis.set_title(title, fontsize=13)
+        axis.axis("off")
     fig.tight_layout()
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -63,17 +83,24 @@ def plot_support(contour, padding, save_path):
 
 def plot_convergence(history, save_path):
     panels = (("total", "总损失"), ("amplitude", "振幅损失"), ("histogram", "直方图损失"),
-              ("background", "背景损失"), ("psnr", "PSNR (dB)"), ("ssim", "SSIM"))
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+              ("background", "背景损失"), ("area_ratio", "轮廓占比损失"), ("psnr", "PSNR (dB)"),
+              ("ssim", "SSIM"), ("pearson_cc", "Pearson CC"), ("amp_cc", "振幅域 CC"),
+              ("phase_error", "平均相位误差 (rad)"), ("support_iou", "粗轮廓 IoU"))
+    fig, axes = plt.subplots(3, 4, figsize=(18, 12))
     for axis, (key, title) in zip(axes.flat, panels):
         axis.plot(history["iteration"], history[key], color="#2E86AB", lw=2)
         axis.set_xlabel("迭代轮数")
         axis.set_ylabel(title)
         axis.set_title(title)
         axis.grid(True, alpha=0.3)
-        if key in ("total", "amplitude", "histogram", "background"):
+        if key in ("total", "amplitude", "histogram", "background", "area_ratio"):
             axis.set_yscale("log")
             axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: "{:.0e}".format(value)))
+            axis.yaxis.set_minor_formatter(NullFormatter())
+        else:
+            axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: "{:.3f}".format(value)))
+    for axis in axes.flat[len(panels):]:
+        axis.axis("off")
     fig.tight_layout()
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -84,3 +111,12 @@ def save_history(history, save_path):
         writer = csv.writer(file)
         writer.writerow(history.keys())
         writer.writerows(zip(*history.values()))
+
+
+def save_metrics(history, save_path):
+    keys = ("psnr", "ssim", "pearson_cc", "amp_cc", "phase_error", "support_iou")
+    with open(save_path, "w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.writer(file)
+        writer.writerow(("指标", "末轮值"))
+        for key in keys:
+            writer.writerow((key, history[key][-1]))

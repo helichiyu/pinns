@@ -10,10 +10,11 @@ from PIL import Image
 
 import config
 from losses import (amplitude_mask, background_loss, dynamic_contour,
-                    normalized_log_amplitude_loss, soft_histogram_cdf_loss)
+                    contour_area_ratio_loss, normalized_log_amplitude_loss,
+                    soft_histogram_cdf_loss)
 from model import UNet
 from visualization import (plot_convergence, plot_real_space, plot_spectra,
-                           plot_support, save_history)
+                           plot_support, save_history, save_metrics)
 
 
 def load_source(path, device):
@@ -49,6 +50,52 @@ def ssim(prediction, source):
              (variance_prediction + variance_source + 0.03**2) + 1e-12)).mean().item()
 
 
+def pearson_cc(prediction, source):
+    prediction = prediction.flatten() - prediction.mean()
+    source = source.flatten() - source.mean()
+    return (prediction * source).sum().div(prediction.norm() * source.norm() + 1e-12).item()
+
+
+def amplitude_metrics(prediction, source):
+    target_spectrum = torch.fft.fft2(source)
+    prediction_spectrum = torch.fft.fft2(prediction)
+    target_amplitude = torch.abs(target_spectrum)
+    prediction_amplitude = torch.abs(prediction_spectrum)
+    phase_difference = torch.angle(target_spectrum) - torch.angle(prediction_spectrum)
+    amplitude_cc = (target_amplitude * prediction_amplitude * torch.cos(phase_difference)).sum()
+    amplitude_cc = amplitude_cc.div(target_amplitude.norm() * prediction_amplitude.norm() + 1e-12).item()
+    phase_error = torch.arccos(torch.cos(phase_difference)).mean().item()
+    return amplitude_cc, phase_error
+
+
+def support_iou(prediction_contour, source_contour):
+    prediction_mask = prediction_contour > 0.5
+    source_mask = source_contour > 0.5
+    return (prediction_mask & source_mask).sum().div((prediction_mask | source_mask).sum() + 1e-12).item()
+
+
+def register_to_source(prediction, source):
+    source_spectrum = torch.fft.fft2(source)
+    _, _, height, width = prediction.shape
+    best_score = -float("inf")
+    best_prediction = prediction
+    for flipped in (False, True):
+        candidate = torch.flip(prediction, dims=(-2, -1)) if flipped else prediction
+        correlation = torch.fft.ifft2(source_spectrum.conj() * torch.fft.fft2(candidate)).real
+        shift_y, shift_x = divmod(correlation.argmax().item(), width)
+        if shift_y > height // 2:
+            shift_y -= height
+        if shift_x > width // 2:
+            shift_x -= width
+        for shift in ((shift_y, shift_x), (-shift_y, -shift_x)):
+            aligned = torch.roll(candidate, shifts=shift, dims=(-2, -1))
+            score = (aligned * source).sum().item()
+            if score > best_score:
+                best_score = score
+                best_prediction = aligned
+    return best_prediction
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="单 UNet 三损失相位恢复")
     parser.add_argument("--image", default=config.IMAGE_PATH)
@@ -69,14 +116,18 @@ def main(args):
     source, padding = load_source(args.image, device)
     target_amplitude = torch.abs(torch.fft.fft2(source)).detach()
     valid_amplitude = amplitude_mask(target_amplitude, config.AMPLITUDE_FLOOR)
+    source_contour = dynamic_contour(source, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD).detach()
+    source_area_ratio = (source_contour > 0.5).float().mean().detach()
     model = UNet(config.BASE_CHANNELS).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     current_input = random_phase_initialization(target_amplitude)
     output_dir = args.output or os.path.join(config.RESULTS_DIR, datetime.now().strftime("run_%Y%m%d_%H%M%S"))
     os.makedirs(output_dir, exist_ok=True)
-    history = {key: [] for key in ("iteration", "total", "amplitude", "histogram", "background", "psnr", "ssim")}
+    history = {key: [] for key in ("iteration", "total", "amplitude", "histogram", "background", "area_ratio",
+                                   "psnr", "ssim", "pearson_cc", "amp_cc", "phase_error", "support_iou")}
 
-    print("设备：{}；输入：{}；轮数：{}".format(device, args.image, args.iterations))
+    print("设备：{}；输入：{}；轮数：{}；原图粗轮廓占比：{:.2%}".format(
+        device, args.image, args.iterations, source_area_ratio.item()))
     for iteration in range(1, args.iterations + 1):
         optimizer.zero_grad(set_to_none=True)
         prediction = model(current_input)
@@ -84,29 +135,37 @@ def main(args):
         histogram = soft_histogram_cdf_loss(prediction, source, config.HISTOGRAM_BINS, config.HISTOGRAM_SOFTNESS)
         contour = dynamic_contour(prediction, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD)
         background = background_loss(prediction, contour)
+        area_ratio = contour_area_ratio_loss(contour, source_area_ratio)
         total = (config.WEIGHT_AMPLITUDE * amplitude + config.WEIGHT_HISTOGRAM * histogram +
-                 config.WEIGHT_BACKGROUND * background)
+                 config.WEIGHT_BACKGROUND * background + config.WEIGHT_AREA_RATIO * area_ratio)
         total.backward()
         optimizer.step()
         current_input = prediction.detach()
 
         if iteration == 1 or iteration % args.log_every == 0 or iteration == args.iterations:
             with torch.no_grad():
-                values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(),
-                          psnr(prediction, source), ssim(prediction, source))
+                evaluation_prediction = register_to_source(prediction, source)
+                evaluation_contour = dynamic_contour(evaluation_prediction, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD)
+                amp_cc, phase_error = amplitude_metrics(evaluation_prediction, source)
+                values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(), area_ratio.item(),
+                          psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
+                          pearson_cc(evaluation_prediction, source), amp_cc, phase_error,
+                          support_iou(evaluation_contour, source_contour))
             for key, value in zip(history, values):
                 history[key].append(value)
-            print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} psnr={:.2f} ssim={:.3f}".format(
-                iteration, args.iterations, *values[1:]))
+            print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} area={:.3e} psnr={:.2f} "
+                  "ssim={:.3f} iou={:.3f}".format(iteration, args.iterations, *values[1:6], values[6], values[7], values[11]))
 
     with torch.no_grad():
         final_prediction = prediction.detach()
-        final_contour = dynamic_contour(final_prediction, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD)
-    plot_real_space(source, final_prediction, padding, os.path.join(output_dir, "real_space.png"))
-    plot_spectra(source, final_prediction, os.path.join(output_dir, "spectra.png"))
-    plot_support(final_contour, padding, os.path.join(output_dir, "support.png"))
+        display_prediction = register_to_source(final_prediction, source)
+        final_contour = dynamic_contour(display_prediction, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD)
+    plot_real_space(source, display_prediction, padding, os.path.join(output_dir, "real_space.png"))
+    plot_spectra(source, display_prediction, os.path.join(output_dir, "spectra.png"))
+    plot_support(source_contour, final_contour, padding, os.path.join(output_dir, "support.png"))
     plot_convergence(history, os.path.join(output_dir, "convergence.png"))
     save_history(history, os.path.join(output_dir, "history.csv"))
+    save_metrics(history, os.path.join(output_dir, "metrics.csv"))
     torch.save({"model": model.state_dict(), "history": history, "config": vars(config)},
                os.path.join(output_dir, "state.pt"))
     print("结果已保存到：{}".format(output_dir))
