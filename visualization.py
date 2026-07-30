@@ -1,0 +1,83 @@
+import csv
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+plt.rcParams["font.sans-serif"] = ["SimHei"]
+plt.rcParams["axes.unicode_minus"] = False
+
+
+def tensor_to_numpy(image, padding):
+    left, right, top, bottom = padding
+    height, width = image.shape[-2:]
+    image = image[..., top:height - bottom if bottom else height, left:width - right if right else width]
+    return image.squeeze().detach().cpu().numpy()
+
+
+def plot_real_space(source, prediction, padding, save_path):
+    source = tensor_to_numpy(source, padding)
+    prediction = tensor_to_numpy(prediction, padding)
+    error = np.abs(prediction - source)
+    overlay = np.zeros((*source.shape, 3), dtype=np.float32)
+    overlay[..., 0] = source
+    overlay[..., 1] = prediction
+    overlay[..., 2] = prediction
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    panels = ((source, "原图（反转后，背景为 0）", "gray"),
+              (prediction, "最终输出（背景为 0）", "gray"),
+              (overlay, "叠加图（原图红，输出青）", None),
+              (error, "绝对误差", "hot"))
+    for axis, (image, title, cmap) in zip(axes, panels):
+        axis.imshow(image, cmap=cmap, vmin=0 if cmap else None, vmax=1 if cmap == "gray" else None)
+        axis.set_title(title, fontsize=13)
+        axis.axis("off")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_spectra(source, prediction, save_path):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    for axis, image, title in zip(axes, (source, prediction), ("原图振幅谱", "最终输出振幅谱")):
+        amplitude = torch.fft.fftshift(torch.abs(torch.fft.fft2(image)))
+        axis.imshow(np.log1p(amplitude.squeeze().detach().cpu().numpy()), cmap="magma")
+        axis.set_title(title, fontsize=13)
+        axis.axis("off")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_support(contour, padding, save_path):
+    fig, axis = plt.subplots(figsize=(5, 5))
+    axis.imshow(tensor_to_numpy(contour, padding), cmap="gray", vmin=0, vmax=1)
+    axis.set_title("最终输出的动态粗轮廓", fontsize=13)
+    axis.axis("off")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_convergence(history, save_path):
+    panels = (("total", "总损失"), ("amplitude", "振幅损失"), ("histogram", "直方图损失"),
+              ("background", "背景损失"), ("psnr", "PSNR (dB)"), ("ssim", "SSIM"))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    for axis, (key, title) in zip(axes.flat, panels):
+        axis.plot(history["iteration"], history[key], color="#2E86AB", lw=2)
+        axis.set_xlabel("迭代轮数")
+        axis.set_ylabel(title)
+        axis.set_title(title)
+        axis.grid(True, alpha=0.3)
+        if key in ("total", "amplitude", "histogram", "background"):
+            axis.set_yscale("log")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_history(history, save_path):
+    with open(save_path, "w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.writer(file)
+        writer.writerow(history.keys())
+        writer.writerows(zip(*history.values()))
