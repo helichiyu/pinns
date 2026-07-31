@@ -67,11 +67,9 @@ def plot_support(source_contour, prediction_contour, padding, save_path):
 def plot_source_contour_explanation(source, contour, padding, ratio, save_path):
     source_image = tensor_to_numpy(source, padding)
     contour_image = tensor_to_numpy(contour, padding)
-    binary_contour = (contour_image > 0.5).astype(np.float32)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     panels = ((source_image, "原图（反转后，背景为 0）"),
-              (contour_image, "高斯模糊后的软粗轮廓"),
-              (binary_contour, "二值粗轮廓，占比 {:.2%}".format(ratio)))
+              (contour_image, "软粗轮廓（均值 {:.2%}）".format(ratio)))
     for axis, (image, title) in zip(axes, panels):
         axis.imshow(image, cmap="gray", vmin=0, vmax=1)
         axis.set_title(title, fontsize=13)

@@ -117,7 +117,7 @@ def main(args):
     target_amplitude = torch.abs(torch.fft.fft2(source)).detach()
     valid_amplitude = amplitude_mask(target_amplitude, config.AMPLITUDE_FLOOR)
     source_contour = dynamic_contour(source, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD).detach()
-    source_area_ratio = (source_contour > 0.5).float().mean().detach()
+    source_area_ratio = source_contour.mean().detach()
     model = UNet(config.BASE_CHANNELS).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     current_input = random_phase_initialization(target_amplitude)
@@ -126,7 +126,7 @@ def main(args):
     history = {key: [] for key in ("iteration", "total", "amplitude", "histogram", "background", "area_ratio",
                                    "psnr", "ssim", "pearson_cc", "amp_cc", "phase_error", "support_iou")}
 
-    print("设备：{}；输入：{}；轮数：{}；原图粗轮廓占比：{:.2%}".format(
+    print("设备：{}；输入：{}；轮数：{}；原图软轮廓均值：{:.2%}".format(
         device, args.image, args.iterations, source_area_ratio.item()))
     for iteration in range(1, args.iterations + 1):
         optimizer.zero_grad(set_to_none=True)
