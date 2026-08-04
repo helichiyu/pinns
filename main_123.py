@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+import time
 from datetime import datetime
 
 import numpy as np
@@ -16,7 +17,7 @@ from model import UNet
 from visualization import (plot_convergence, plot_real_space, plot_spectra,
                            plot_support, save_history, save_metrics)
 # Reuse 567 pipeline helpers without modifying 567's code.
-from main import (amplitude_metrics, pearson_cc, psnr,
+from main import (amplitude_metrics, format_duration, pearson_cc, psnr,
                   random_phase_initialization, register_to_source, ssim,
                   support_iou)
 
@@ -47,13 +48,8 @@ def load_source_123(path, device):
     pad_left, pad_right = pad_w // 2, pad_w - pad_w // 2
     source = F.pad(source, (pad_left, pad_right, pad_top, pad_bottom))
 
-    # Crop back to the original object region for display: remove the 2x
-    # expansion border plus the alignment pad. (left, right, top, bottom)
-    padding = (pad_left + left,
-               pad_right + (width - left),
-               pad_top + top,
-               pad_bottom + (height - top))
-    return source, padding
+    # No display crop: show the full expanded canvas (oversampled view).
+    return source, (0, 0, 0, 0)
 
 
 def parse_args():
@@ -88,6 +84,7 @@ def main(args):
 
     print("设备：{}；输入：{}；轮数：{}；画布（扩边后）：{}；原图软轮廓均值：{:.2%}".format(
         device, args.image, args.iterations, tuple(source.shape[-2:]), source_area_ratio.item()))
+    start_time = time.time()
     for iteration in range(1, args.iterations + 1):
         optimizer.zero_grad(set_to_none=True)
         prediction = model(current_input)
@@ -113,8 +110,12 @@ def main(args):
                           support_iou(evaluation_contour, source_contour))
             for key, value in zip(history, values):
                 history[key].append(value)
+            elapsed = time.time() - start_time
+            eta = elapsed / iteration * (args.iterations - iteration)
             print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} area={:.3e} psnr={:.2f} "
-                  "ssim={:.3f} iou={:.3f}".format(iteration, args.iterations, *values[1:6], values[6], values[7], values[11]))
+                  "ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
+                      iteration, args.iterations, *values[1:6], values[6], values[7], values[11],
+                      format_duration(elapsed), format_duration(eta)))
 
     with torch.no_grad():
         final_prediction = prediction.detach()

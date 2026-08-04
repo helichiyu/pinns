@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+import time
 from datetime import datetime
 
 import numpy as np
@@ -15,6 +16,15 @@ from losses import (amplitude_mask, background_loss, dynamic_contour,
 from model import UNet
 from visualization import (plot_convergence, plot_real_space, plot_spectra,
                            plot_support, save_history, save_metrics)
+
+
+def format_duration(seconds):
+    seconds = int(seconds)
+    if seconds < 60:
+        return "{}s".format(seconds)
+    if seconds < 3600:
+        return "{}m{:02d}s".format(seconds // 60, seconds % 60)
+    return "{}h{:02d}m".format(seconds // 3600, (seconds % 3600) // 60)
 
 
 def load_source(path, device):
@@ -128,6 +138,7 @@ def main(args):
 
     print("设备：{}；输入：{}；轮数：{}；原图软轮廓均值：{:.2%}".format(
         device, args.image, args.iterations, source_area_ratio.item()))
+    start_time = time.time()
     for iteration in range(1, args.iterations + 1):
         optimizer.zero_grad(set_to_none=True)
         prediction = model(current_input)
@@ -153,8 +164,12 @@ def main(args):
                           support_iou(evaluation_contour, source_contour))
             for key, value in zip(history, values):
                 history[key].append(value)
+            elapsed = time.time() - start_time
+            eta = elapsed / iteration * (args.iterations - iteration)
             print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} area={:.3e} psnr={:.2f} "
-                  "ssim={:.3f} iou={:.3f}".format(iteration, args.iterations, *values[1:6], values[6], values[7], values[11]))
+                  "ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
+                      iteration, args.iterations, *values[1:6], values[6], values[7], values[11],
+                      format_duration(elapsed), format_duration(eta)))
 
     with torch.no_grad():
         final_prediction = prediction.detach()
