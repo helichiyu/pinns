@@ -81,17 +81,23 @@ def plot_source_contour_explanation(source, contour, padding, ratio, save_path):
 
 def plot_convergence(history, save_path):
     panels = (("total", "总损失"), ("amplitude", "振幅损失"), ("histogram", "直方图损失"),
-              ("background", "背景损失"), ("area_ratio", "轮廓占比损失"), ("psnr", "PSNR (dB)"),
-              ("ssim", "SSIM"), ("pearson_cc", "Pearson CC"), ("amp_cc", "振幅域 CC"),
-              ("phase_error", "平均相位误差 (rad)"), ("support_iou", "粗轮廓 IoU"))
-    fig, axes = plt.subplots(3, 4, figsize=(18, 12))
+              ("background", "背景损失"), ("area_ratio", "轮廓占比损失"),
+              ("w_amplitude", "振幅权重"), ("w_histogram", "直方图权重"),
+              ("w_background", "背景权重"), ("w_area_ratio", "占比权重"),
+              ("psnr", "PSNR (dB)"), ("ssim", "SSIM"), ("pearson_cc", "Pearson CC"),
+              ("amp_cc", "振幅域 CC"), ("phase_error", "平均相位误差 (rad)"), ("support_iou", "粗轮廓 IoU"))
+    ncols = 5
+    nrows = (len(panels) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.6, nrows * 4))
+    log_keys = ("amplitude", "histogram", "background", "area_ratio",
+                "w_amplitude", "w_histogram", "w_background", "w_area_ratio")
     for axis, (key, title) in zip(axes.flat, panels):
         axis.plot(history["iteration"], history[key], color="#2E86AB", lw=2)
         axis.set_xlabel("迭代轮数")
         axis.set_ylabel(title)
         axis.set_title(title)
         axis.grid(True, alpha=0.3)
-        if key in ("total", "amplitude", "histogram", "background", "area_ratio"):
+        if key in log_keys:
             axis.set_yscale("log")
             axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: "{:.0e}".format(value)))
             axis.yaxis.set_minor_formatter(NullFormatter())

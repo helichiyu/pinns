@@ -1,6 +1,7 @@
 import math
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 
@@ -51,3 +52,22 @@ def background_loss(prediction, contour):
 
 def contour_area_ratio_loss(contour, target_ratio):
     return F.mse_loss(contour.mean(), target_ratio)
+
+
+class UncertaintyWeights(nn.Module):
+    def __init__(self, num_terms=4):
+        super().__init__()
+        self.log_vars = nn.Parameter(torch.zeros(num_terms))
+
+    def total(self, raw_losses):
+        precision = torch.exp(-self.log_vars)
+        weighted = precision * torch.stack(raw_losses)
+        return weighted.sum() + self.log_vars.sum()
+
+    @torch.no_grad()
+    def initialize_from_losses(self, raw_losses):
+        stacked = torch.stack([loss.detach() for loss in raw_losses])
+        self.log_vars.copy_(torch.log(stacked + 1e-8))
+
+    def effective_weights(self):
+        return torch.exp(-self.log_vars).detach()
