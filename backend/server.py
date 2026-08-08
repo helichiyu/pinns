@@ -13,6 +13,8 @@ import re
 import subprocess
 import sys
 import threading
+import time
+import webbrowser
 
 import numpy as np
 import tornado.ioloop
@@ -98,12 +100,17 @@ class PreviewHandler(tornado.web.RequestHandler):
 class ExperimentSocket(tornado.websocket.WebSocketHandler):
     """Sequential experiment runner with stop support."""
 
+    # Track live browser connections so the server can exit when idle.
+    _connections = 0
+    _last_disconnect = None
+
     def open(self):
         self.loop = tornado.ioloop.IOLoop.current()
         self.proc = None
         self.paused = False
         self.stopped = False
         self.remaining = []
+        ExperimentSocket._connections += 1
 
     def on_message(self, raw):
         msg = json.loads(raw)
@@ -195,6 +202,28 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
 
     def on_close(self):
         self._stop()
+        ExperimentSocket._connections -= 1
+        if ExperimentSocket._connections <= 0:
+            ExperimentSocket._connections = 0
+            ExperimentSocket._last_disconnect = time.time()
+
+
+# Auto-exit policy: shut the server down once no browser is connected,
+# so closing the browser tab/window also stops the backend.
+_STARTUP_GRACE = 60  # seconds after start before idle shutdown is allowed
+_IDLE_TIMEOUT = 10   # seconds with no WS connection before auto-exit
+_start_time = time.time()
+
+
+def _idle_check():
+    if ExperimentSocket._connections > 0:
+        return
+    if time.time() - _start_time < _STARTUP_GRACE:
+        return
+    deadline = ExperimentSocket._last_disconnect or _start_time
+    if time.time() - deadline >= _IDLE_TIMEOUT:
+        print("No browser connected for %ds, shutting down." % _IDLE_TIMEOUT)
+        tornado.ioloop.IOLoop.current().stop()
 
 
 def make_app():
@@ -209,7 +238,13 @@ def make_app():
 
 
 if __name__ == "__main__":
+    _start_time = time.time()
     app = make_app()
     app.listen(PORT)
-    print("Server running at http://localhost:{}".format(PORT))
+    url = "http://localhost:{}".format(PORT)
+    print("Server running at " + url)
+    # Open the default browser once the event loop is running.
+    tornado.ioloop.IOLoop.current().add_callback(lambda: webbrowser.open(url))
+    # Auto-exit when the browser is closed.
+    tornado.ioloop.PeriodicCallback(_idle_check, 1000).start()
     tornado.ioloop.IOLoop.current().start()
