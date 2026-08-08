@@ -82,15 +82,17 @@ def plot_source_contour_explanation(source, contour, padding, ratio, save_path):
 def plot_convergence(history, save_path):
     panels = (("total", "总损失"), ("amplitude", "振幅损失"), ("histogram", "直方图损失"),
               ("background", "背景损失"), ("area_ratio", "轮廓占比损失"),
-              ("w_amplitude", "振幅权重"), ("w_histogram", "直方图权重"),
-              ("w_background", "背景权重"), ("w_area_ratio", "占比权重"),
+              ("r_background", "背景残差 r"), ("r_area_ratio", "占比残差 r"),
+              ("lam_background", "背景乘子 λ"), ("lam_area_ratio", "占比乘子 λ"),
               ("psnr", "PSNR (dB)"), ("ssim", "SSIM"), ("pearson_cc", "Pearson CC"),
               ("amp_cc", "振幅域 CC"), ("phase_error", "平均相位误差 (rad)"), ("support_iou", "粗轮廓 IoU"))
     ncols = 5
     nrows = (len(panels) + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.6, nrows * 4))
-    log_keys = ("amplitude", "histogram", "background", "area_ratio",
-                "w_amplitude", "w_histogram", "w_background", "w_area_ratio")
+    # 残差与乘子可为负（占比偏小时 r<0、λ<0），必须用线性轴。
+    log_keys = ("amplitude", "histogram", "background", "area_ratio")
+    # total 含振幅项，量级约 1e-4，同样需要科学计数法。
+    small_linear_keys = ("total", "r_background", "r_area_ratio", "lam_background", "lam_area_ratio")
     for axis, (key, title) in zip(axes.flat, panels):
         axis.plot(history["iteration"], history[key], color="#2E86AB", lw=2)
         axis.set_xlabel("迭代轮数")
@@ -101,6 +103,9 @@ def plot_convergence(history, save_path):
             axis.set_yscale("log")
             axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: "{:.0e}".format(value)))
             axis.yaxis.set_minor_formatter(NullFormatter())
+        elif key in small_linear_keys:
+            # 残差与乘子可为负、量级又极小，用科学计数法的线性轴。
+            axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: "{:.1e}".format(value)))
         else:
             axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: "{:.3f}".format(value)))
     for axis in axes.flat[len(panels):]:

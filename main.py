@@ -10,7 +10,8 @@ import torch.nn.functional as F
 from PIL import Image
 
 import config
-from losses import (UncertaintyWeights, amplitude_mask, background_loss,
+from losses import (AugmentedLagrangian, amplitude_mask, area_ratio_residual,
+                    background_loss, background_residual,
                     contour_area_ratio_loss, dynamic_contour,
                     normalized_log_amplitude_loss, soft_histogram_cdf_loss)
 from model import UNet
@@ -129,14 +130,13 @@ def main(args):
     source_contour = dynamic_contour(source, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD).detach()
     source_area_ratio = source_contour.mean().detach()
     model = UNet(config.BASE_CHANNELS).to(device)
-    uncertainty = UncertaintyWeights(num_terms=4).to(device)
-    optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(uncertainty.parameters()), lr=config.LEARNING_RATE)
+    lagrangian = AugmentedLagrangian(config.AL_LAMBDA_RATIO).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     current_input = random_phase_initialization(target_amplitude)
     output_dir = args.output or os.path.join(config.RESULTS_DIR, datetime.now().strftime("run_%Y%m%d_%H%M%S"))
     os.makedirs(output_dir, exist_ok=True)
     history = {key: [] for key in ("iteration", "total", "amplitude", "histogram", "background", "area_ratio",
-                                   "w_amplitude", "w_histogram", "w_background", "w_area_ratio",
+                                   "r_background", "r_area_ratio", "lam_background", "lam_area_ratio",
                                    "psnr", "ssim", "pearson_cc", "amp_cc", "phase_error", "support_iou")}
 
     print("设备：{}；输入：{}；轮数：{}；原图软轮廓均值：{:.2%}".format(
@@ -150,12 +150,15 @@ def main(args):
         contour = dynamic_contour(prediction, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD)
         background = background_loss(prediction, contour)
         area_ratio = contour_area_ratio_loss(contour, source_area_ratio)
-        raw_losses = [amplitude, histogram, background, area_ratio]
+        penalties = (background, area_ratio)
+        residuals = (background_residual(prediction, contour),
+                     area_ratio_residual(contour, source_area_ratio))
         if iteration == 1:
-            uncertainty.initialize_from_losses(raw_losses)
-        total = uncertainty.total(raw_losses)
+            lagrangian.calibrate(amplitude, histogram, penalties)
+        total = lagrangian.total(amplitude, histogram, penalties, residuals)
         total.backward()
         optimizer.step()
+        lagrangian.update_multipliers(residuals)
         current_input = prediction.detach()
 
         if iteration == 1 or iteration % args.log_every == 0 or iteration == args.iterations:
@@ -163,9 +166,9 @@ def main(args):
                 evaluation_prediction = register_to_source(prediction, source)
                 evaluation_contour = dynamic_contour(evaluation_prediction, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD)
                 amp_cc, phase_error = amplitude_metrics(evaluation_prediction, source)
-                weights = uncertainty.effective_weights().tolist()
+                lam_background, lam_area_ratio = lagrangian.lambdas.tolist()
                 values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(), area_ratio.item(),
-                          weights[0], weights[1], weights[2], weights[3],
+                          residuals[0].item(), residuals[1].item(), lam_background, lam_area_ratio,
                           psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
                           pearson_cc(evaluation_prediction, source), amp_cc, phase_error,
                           support_iou(evaluation_contour, source_contour))
@@ -174,7 +177,7 @@ def main(args):
             elapsed = time.time() - start_time
             eta = elapsed / iteration * (args.iterations - iteration)
             print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} area={:.3e} "
-                  "w=[{:.2e} {:.2e} {:.2e} {:.2e}] psnr={:.2f} ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
+                  "r=[{:+.2e} {:+.2e}] lam=[{:+.2e} {:+.2e}] psnr={:.2f} ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
                       iteration, args.iterations, *values[1:6], *values[6:10],
                       values[10], values[11], values[15],
                       format_duration(elapsed), format_duration(eta)))
