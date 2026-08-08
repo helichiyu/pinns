@@ -84,7 +84,7 @@ def plot_convergence(history, save_path):
               ("background", "背景损失"), ("area_ratio", "轮廓占比损失"),
               ("psnr", "PSNR (dB)"), ("ssim", "SSIM"), ("pearson_cc", "Pearson CC"),
               ("amp_cc", "振幅域 CC"), ("phase_error", "平均相位误差 (rad)"), ("support_iou", "粗轮廓 IoU"))
-    ncols = 5
+    ncols = 4
     nrows = (len(panels) + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.6, nrows * 4))
     log_keys = ("amplitude", "histogram", "background", "area_ratio")
