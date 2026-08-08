@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>相位恢复实验台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>相位恢复实验台</h1>
+    <div class="exp-count">
+      <span class="label">实验组数</span>
+      <button id="dec-btn" class="step-btn">&#8722;</button>
+      <span id="exp-count-display" class="count">1</span>
+      <button id="inc-btn" class="step-btn">&#43;</button>
+      <button id="reset-btn" class="reset-btn">重置</button>
+    </div>
+  </header>
+
+  <main id="experiments"></main>
+
+  <footer class="terminal-section">
+    <div class="terminal-header">
+      <span class="terminal-title">终端输出</span>
+      <div class="terminal-controls">
+        <button id="start-btn" class="start-btn">开始运行</button>
+        <button id="pause-btn" class="ctrl-btn" disabled>暂停</button>
+        <button id="stop-btn" class="ctrl-btn ctrl-stop" disabled>终止</button>
+      </div>
+    </div>
+    <div id="terminal" class="terminal"></div>
+  </footer>
+
+  <div id="preview-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-card-header">
+        <span id="modal-title">轮廓预览</span>
+        <button id="preview-close" class="close-btn">关闭</button>
+      </div>
+      <img id="preview-img" class="preview-img">
+      <div id="modal-loading" class="modal-loading">请稍候，正在生成预览…</div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

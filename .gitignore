@@ -1,5 +1,5 @@
 __pycache__/
 results/
-results_projected_123/
+123.png
 567.png
-/config.py
+backend/config.py
