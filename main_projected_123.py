@@ -11,7 +11,7 @@ from PIL import Image
 
 import config_projected_123 as config
 from losses import (AugmentedLagrangian, amplitude_mask, area_ratio_residual,
-                    background_loss, background_residual, contour_area_ratio_loss,
+                    background_loss, contour_area_ratio_loss,
                     dynamic_contour, normalized_log_amplitude_loss,
                     soft_histogram_cdf_loss)
 from main import (amplitude_metrics, format_duration, pearson_cc, psnr,
@@ -65,14 +65,15 @@ def main(args):
     source_contour = dynamic_contour(source, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD).detach()
     source_area_ratio = source_contour.mean().detach()
     model = ProjectedUNet(config.BASE_CHANNELS).to(device)
-    lagrangian = AugmentedLagrangian(config.AL_LAMBDA_RATIO).to(device)
+    lagrangian = AugmentedLagrangian(config.SHARE_HISTOGRAM, config.SHARE_BACKGROUND,
+                                     config.SHARE_AREA_RATIO, config.AL_LAMBDA_RATIO).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     current_input = random_phase_initialization(target_amplitude)
     output_dir = args.output or os.path.join(config.RESULTS_DIR, datetime.now().strftime("run_%Y%m%d_%H%M%S"))
     os.makedirs(output_dir, exist_ok=True)
     history = {key: [] for key in (
         "iteration", "total", "amplitude", "histogram", "background", "area_ratio",
-        "r_background", "r_area_ratio", "lam_background", "lam_area_ratio",
+        "r_area_ratio", "lam_area_ratio",
         "projection_amplitude", "psnr", "ssim", "pearson_cc", "amp_cc", "phase_error", "support_iou",
     )}
 
@@ -88,15 +89,13 @@ def main(args):
         contour = dynamic_contour(prediction, config.CONTOUR_SIGMA, config.CONTOUR_THRESHOLD)
         background = background_loss(prediction, contour)
         area_ratio = contour_area_ratio_loss(contour, source_area_ratio)
-        penalties = (background, area_ratio)
-        residuals = (background_residual(prediction, contour),
-                     area_ratio_residual(contour, source_area_ratio))
+        area_residual = area_ratio_residual(contour, source_area_ratio)
         if iteration == 1:
-            lagrangian.calibrate(amplitude, histogram, penalties)
-        total = lagrangian.total(amplitude, histogram, penalties, residuals)
+            lagrangian.calibrate(amplitude, histogram, background, area_ratio)
+        total = lagrangian.total(amplitude, histogram, background, area_ratio, area_residual)
         total.backward()
         optimizer.step()
-        lagrangian.update_multipliers(residuals)
+        lagrangian.update_multipliers(area_residual)
         current_input = prediction.detach()
 
         if iteration == 1 or iteration % args.log_every == 0 or iteration == args.iterations:
@@ -107,10 +106,9 @@ def main(args):
                 amp_cc, phase_error = amplitude_metrics(evaluation_prediction, source)
                 projection_amplitude = normalized_log_amplitude_loss(
                     projected_input, target_amplitude, valid_amplitude)
-                lam_background, lam_area_ratio = lagrangian.lambdas.tolist()
                 values = (
                     iteration, total.item(), amplitude.item(), histogram.item(), background.item(), area_ratio.item(),
-                    residuals[0].item(), residuals[1].item(), lam_background, lam_area_ratio,
+                    area_residual.item(), lagrangian.lambda_area.item(),
                     projection_amplitude.item(), psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
                     pearson_cc(evaluation_prediction, source), amp_cc, phase_error,
                     support_iou(evaluation_contour, source_contour),
@@ -119,11 +117,10 @@ def main(args):
                 history[key].append(value)
             elapsed = time.time() - start_time
             eta = elapsed / iteration * (args.iterations - iteration)
-            print("[{}/{}] total={:.3e} amp={:.3e} projection_amp={:.3e} hist={:.3e} bg={:.3e} area={:.3e} "
-                  "r=[{:+.2e} {:+.2e}] lam=[{:+.2e} {:+.2e}] psnr={:.2f} ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
-                      iteration, args.iterations, values[1], values[2], values[10], values[3], values[4], values[5],
-                      values[6], values[7], values[8], values[9],
-                      values[11], values[12], values[16], format_duration(elapsed), format_duration(eta)))
+            print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} area={:.3e} "
+                  "ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
+                      iteration, args.iterations, values[1], values[2], values[3], values[4], values[5],
+                      values[10], values[14], format_duration(elapsed), format_duration(eta)))
 
     with torch.no_grad():
         final_prediction = prediction.detach()

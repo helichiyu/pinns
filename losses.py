@@ -54,18 +54,6 @@ def contour_area_ratio_loss(contour, target_ratio):
     return F.mse_loss(contour.mean(), target_ratio)
 
 
-def background_residual(prediction, contour):
-    """背景约束的一阶残差 mean((1-contour)·pred)，供增广拉格朗日的乘子项使用。
-
-    与 background_loss 是同一个约束（轮廓外应为 0）的两种度量：
-    background_loss = mean(逐像素残差²) 对应论文的罚项 β‖C‖²，
-    本函数 = mean(逐像素残差) 对应论文的乘子项 ⟨λ, C⟩。
-    因 pred 与 outside 均非负，该残差恒 ≥ 0，且为 0 当且仅当约束满足。
-    """
-    outside = 1.0 - contour.detach()
-    return (outside * prediction).mean()
-
-
 def area_ratio_residual(contour, target_ratio):
     """占比约束的带符号残差 contour.mean() - target_ratio。
 
@@ -77,66 +65,67 @@ def area_ratio_residual(contour, target_ratio):
 
 
 class AugmentedLagrangian(nn.Module):
-    """AL-PINNs 增广拉格朗日（Son et al., arXiv:2205.01059）。
+    """AL-PINNs 增广拉格朗日（Son et al., arXiv:2205.01059），只用于轮廓占比约束。
 
-    论文的目标函数（式 5，本文件按其形式实现）：
+    论文的目标函数（式 5）：
 
-        L_λ(θ) = ‖N u - f‖         # 目标：振幅损失
-               + β ‖T u - g‖²      # 罚项：固定罚参数 β，论文强调 β 必须是预先给定的常数
+        L_λ(θ) = ‖N u - f‖         # 目标
+               + β ‖T u - g‖²      # 罚项：β 是预先给定的固定常数
                + ⟨λ, T u - g⟩      # 乘子项：λ 由梯度上升每步更新
 
-    映射到本项目：目标为振幅损失（权重恒 1），背景与占比为两个约束，直方图为固定弱权重先验。
-    每个约束的罚项直接复用现有的二阶损失，乘子项用对应的一阶残差。
+    映射到本项目：
 
-    与论文的两点差异（均为本项目结构所迫，已在 TODO 中记录）：
-    1. 论文的 λ 是边界上的逐点场，本项目的两个约束各自已是标量聚合，故 λ 为两个标量。
-    2. 多出 w_hist·L_hist 一项统计先验（论文没有对应物），按固定弱权重处理。
+        L = L_amp                                # 目标，权重恒 1
+          + β_hist · L_hist                      # 统计先验
+          + β_bg   · L_bg                        # 背景：只有罚项，见下
+          + β_area · L_area + λ_area · r_area    # 占比：完整增广拉格朗日
 
-    λ 用梯度上升更新：∂L/∂λ_i = r_i，故 λ_i ← λ_i + η_λ · r_i。
+    背景为何只有罚项、没有乘子：论文的边界残差 T u - g 是带符号的、能穿过零，
+    λ 才会自己停下来（Lemma 3.5 的有界性）。而背景残差 mean((1-contour)·pred)
+    恒为正——pred 经 Sigmoid 恒正、outside 恒非负，永远到不了零。配上乘子后
+    λ_bg 单调无界增长，把「整图全黑」推成最优解，实测导致 support_iou 从 0.8 崩到 0.1。
+    占比残差 r_area = contour.mean() - target 能穿过零，故只有它适合配乘子。
+
+    各项权重 β 由首次前向按目标贡献比自动标定，见 calibrate。
     λ 与 β 都是不参与反向传播的 buffer。
     """
 
-    # 约束顺序：0 = 背景，1 = 轮廓占比
-    def __init__(self, lambda_ratio):
+    def __init__(self, share_histogram, share_background, share_area_ratio, lambda_ratio):
         super().__init__()
+        self.shares = (share_histogram, share_background, share_area_ratio)
         self.lambda_ratio = lambda_ratio
-        self.register_buffer("lambdas", torch.zeros(2))
-        self.register_buffer("betas", torch.zeros(2))
-        self.register_buffer("lambda_lrs", torch.zeros(2))
-        self.register_buffer("w_histogram", torch.zeros(()))
+        self.register_buffer("betas", torch.zeros(3))   # 顺序：直方图、背景、占比
+        self.register_buffer("lambda_area", torch.zeros(()))
+        self.register_buffer("lambda_lr", torch.zeros(()))
 
-    def total(self, amplitude, histogram, penalties, residuals):
-        """penalties = (L_bg, L_area) 二阶罚项；residuals = (r_bg, r_area) 一阶残差。"""
-        penalty = (self.betas * torch.stack(penalties)).sum()
-        multiplier = (self.lambdas * torch.stack(residuals)).sum()
-        return amplitude + self.w_histogram * histogram + penalty + multiplier
+    def total(self, amplitude, histogram, background, area_ratio, area_residual):
+        weighted = self.betas * torch.stack([histogram, background, area_ratio])
+        return amplitude + weighted.sum() + self.lambda_area * area_residual
 
     @torch.no_grad()
-    def calibrate(self, amplitude, histogram, penalties):
-        """首步自动标定 β 与直方图权重，使各项初始量级与振幅项对齐。
+    def calibrate(self, amplitude, histogram, background, area_ratio):
+        """首步自动标定：β_i = SHARE_i × L_amp,0 / L_i,0。
 
-        论文的 β 靠网格搜索选取（Table B.5 取 1e2~1e3），本项目改为由第一次前向的
-        实测损失自动推出，避免每张图重调——这是唯一保留自 Kendall 方案的部分。
-        λ 按论文从 0 起步。
+        振幅是唯一的硬数据，权重恒为 1；其余三项按各自的可信度取一个目标贡献比
+        （见 config 的 SHARE_* 注释）。换图片时各项损失值都变，算出的 β 跟着变，
+        但贡献占比不变，故 SHARE_* 是全局常数而非每图参数。
+
+        注意不能让三项与振幅等权：背景损失天生就小，等权会把 β_bg 抬高约 140 倍，
+        使「压黑整图」的力压过振幅目标而塌缩。振幅必须主导。
         """
         anchor = amplitude.detach().clamp_min(1e-12)
-        self.w_histogram.copy_(anchor / histogram.detach().clamp_min(1e-12))
-        initial = torch.stack([penalty.detach() for penalty in penalties])
-        self.betas.copy_(anchor / initial.clamp_min(1e-12))
-        # 两个约束的 β 量级相差数千倍，故 η_λ 按各自的 β 成比例分配。
-        self.lambda_lrs.copy_(self.betas * self.lambda_ratio)
-        self.lambdas.zero_()
+        initial = torch.stack([loss.detach() for loss in (histogram, background, area_ratio)])
+        shares = torch.tensor(self.shares, device=initial.device, dtype=initial.dtype)
+        self.betas.copy_(shares * anchor / initial.clamp_min(1e-12))
+        self.lambda_lr.copy_(self.betas[2] * self.lambda_ratio)
+        self.lambda_area.zero_()
 
     @torch.no_grad()
-    def update_multipliers(self, residuals):
-        """梯度上升：λ_i ← λ_i + η_λ · ∂L/∂λ_i，而 ∂L/∂λ_i = r_i。
+    def update_multipliers(self, area_residual):
+        """梯度上升：λ ← λ + η_λ · ∂L/∂λ，而 ∂L/∂λ = r_area。
 
-        λ 不限号：占比偏小时 r_area < 0 使 λ_area 变负，最小化 λ·r 即把占比推大
+        λ 不限号：占比偏小时 r_area < 0 使 λ 变负，最小化 λ·r 即把占比推大
         （撑开轮廓）；偏大时反向。故单个乘子天然双侧约束，无需容差。
-        r → 0 时 λ 自动停止变化，这是 λ 由违反量驱动、而非由 1/L 驱动的直接体现。
+        r_area → 0 时 λ 自动停止变化，不会像恒正残差那样无界累积。
         """
-        current = torch.stack([residual.detach() for residual in residuals])
-        self.lambdas.add_(self.lambda_lrs * current)
-
-    def state(self):
-        return self.lambdas.tolist() + self.betas.tolist()
+        self.lambda_area.add_(self.lambda_lr * area_residual.detach())
