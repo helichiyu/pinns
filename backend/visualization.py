@@ -53,8 +53,8 @@ def plot_spectra(source, prediction, save_path):
 
 def plot_support(source_contour, prediction_contour, padding, save_path):
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    panels = ((source_contour, "原图粗轮廓（仅展示/占比目标）"),
-              (prediction_contour, "最终输出的动态粗轮廓"))
+    panels = ((source_contour, "原图硬轮廓（仅展示/像素数基准）"),
+              (prediction_contour, "最终输出的 top-k 硬轮廓"))
     for axis, (contour, title) in zip(axes, panels):
         axis.imshow(tensor_to_numpy(contour, padding), cmap="gray", vmin=0, vmax=1)
         axis.set_title(title, fontsize=13)
@@ -68,8 +68,8 @@ def plot_source_contour_explanation(source, contour, padding, ratio, save_path):
     source_image = tensor_to_numpy(source, padding)
     contour_image = tensor_to_numpy(contour, padding)
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    panels = ((source_image, "原图（反转后，背景为 0）"),
-              (contour_image, "软粗轮廓（均值 {:.2%}）".format(ratio)))
+    panels = ((source_image, "处理后的原图（灰度、反转、扩画布、pad）"),
+              (contour_image, "二值化轮廓 mask（占比 {:.2%}）".format(ratio)))
     for axis, (image, title) in zip(axes, panels):
         axis.imshow(image, cmap="gray", vmin=0, vmax=1)
         axis.set_title(title, fontsize=13)
@@ -80,14 +80,14 @@ def plot_source_contour_explanation(source, contour, padding, ratio, save_path):
 
 
 def plot_convergence(history, save_path):
-    panels = (("total", "总损失"), ("amplitude", "振幅损失"), ("histogram", "直方图损失"),
-              ("background", "背景损失"), ("area_ratio", "轮廓占比损失"),
+    panels = (("total", "总损失"), ("amplitude", "振幅损失"), ("histogram", "轮廓内直方图损失"),
+              ("background", "背景损失"),
               ("psnr", "PSNR (dB)"), ("ssim", "SSIM"), ("pearson_cc", "Pearson CC"),
               ("amp_cc", "振幅域 CC"), ("phase_error", "平均相位误差 (rad)"), ("support_iou", "粗轮廓 IoU"))
     ncols = 4
     nrows = (len(panels) + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.6, nrows * 4))
-    log_keys = ("amplitude", "histogram", "background", "area_ratio")
+    log_keys = ("amplitude", "histogram", "background")
     # total 含振幅项，量级约 1e-4，需要科学计数法的线性轴。
     small_linear_keys = ("total",)
     for axis, (key, title) in zip(axes.flat, panels):

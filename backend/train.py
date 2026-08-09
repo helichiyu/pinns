@@ -13,8 +13,8 @@ from PIL import Image
 
 import config
 from losses import (CalibratedWeights, amplitude_mask, background_loss,
-                    contour_area_ratio_loss, dynamic_contour,
-                    normalized_log_amplitude_loss, soft_histogram_cdf_loss)
+                    masked_histogram_cdf_loss, normalized_log_amplitude_loss,
+                    soft_cdf, source_contour, topk_contour)
 from model import UNet
 from visualization import (plot_convergence, plot_real_space, plot_spectra,
                            plot_support, save_history, save_metrics)
@@ -24,7 +24,7 @@ from visualization import (plot_convergence, plot_real_space, plot_spectra,
 METRIC_PREFIX = "__METRIC__"
 RESULT_PREFIX = "__RESULT__"
 
-HISTORY_KEYS = ("iteration", "total", "amplitude", "histogram", "background", "area_ratio",
+HISTORY_KEYS = ("iteration", "total", "amplitude", "histogram", "background",
                 "psnr", "ssim", "pearson_cc", "amp_cc", "phase_error", "support_iou")
 
 
@@ -149,7 +149,11 @@ def parse_args():
     parser.add_argument("--contour-sigma", type=float, default=config.CONTOUR_SIGMA,
                         help="Gaussian blur radius for contour extraction")
     parser.add_argument("--contour-threshold", type=float, default=config.CONTOUR_THRESHOLD,
-                        help="relative peak threshold for contour extraction")
+                        help="源图轮廓的相对峰值阈值（只用于标定源图 mask 与像素数 k）")
+    parser.add_argument("--share-histogram", type=float, default=config.SHARE_HISTOGRAM,
+                        help="轮廓内直方图项初始贡献占振幅项的比例")
+    parser.add_argument("--share-background", type=float, default=config.SHARE_BACKGROUND,
+                        help="背景项初始贡献占振幅项的比例")
     parser.add_argument("--iterations", type=int, default=config.ITERATIONS)
     parser.add_argument("--output", default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -171,11 +175,15 @@ def main(args):
     contour_threshold = args.contour_threshold
     target_amplitude = torch.abs(torch.fft.fft2(source)).detach()
     valid_amplitude = amplitude_mask(target_amplitude, config.AMPLITUDE_FLOOR)
-    source_contour = dynamic_contour(source, contour_sigma, contour_threshold).detach()
-    source_area_ratio = source_contour.mean().detach()
+    source_mask = source_contour(source, contour_sigma, contour_threshold)
+    contour_pixels = int(source_mask.sum().item())
+    if contour_pixels == 0:
+        raise SystemExit("源图轮廓为空（阈值 {} 过高），无法标定像素数 k。".format(contour_threshold))
+    source_area_ratio = contour_pixels / source_mask.numel()
+    target_cdf = soft_cdf(source[source_mask > 0.5], config.HISTOGRAM_BINS,
+                          config.HISTOGRAM_SOFTNESS).detach()
     model = UNet(config.BASE_CHANNELS).to(device)
-    weights = CalibratedWeights(config.SHARE_HISTOGRAM, config.SHARE_BACKGROUND,
-                                config.SHARE_AREA_RATIO).to(device)
+    weights = CalibratedWeights(args.share_histogram, args.share_background).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     current_input = random_phase_initialization(target_amplitude)
     tag = "{}_x{}".format(os.path.splitext(os.path.basename(args.image))[0], args.expand)
@@ -186,20 +194,20 @@ def main(args):
 
     print("Device: {}; image: {}; expand: {}x; canvas: {}; iterations: {}".format(
         device, args.image, args.expand, tuple(source.shape[-2:]), args.iterations))
-    print("Source contour ratio: {:.2%}".format(source_area_ratio.item()))
+    print("Source contour ratio: {:.2%} ({} px)".format(source_area_ratio, contour_pixels))
     start_time = time.time()
     prediction = None
     for iteration in range(1, args.iterations + 1):
         optimizer.zero_grad(set_to_none=True)
         prediction = model(current_input)
         amplitude = normalized_log_amplitude_loss(prediction, target_amplitude, valid_amplitude)
-        histogram = soft_histogram_cdf_loss(prediction, source, config.HISTOGRAM_BINS, config.HISTOGRAM_SOFTNESS)
-        contour = dynamic_contour(prediction, contour_sigma, contour_threshold)
+        contour = topk_contour(prediction, contour_sigma, contour_pixels)
+        histogram = masked_histogram_cdf_loss(prediction, contour, target_cdf,
+                                              config.HISTOGRAM_BINS, config.HISTOGRAM_SOFTNESS)
         background = background_loss(prediction, contour)
-        area_ratio = contour_area_ratio_loss(contour, source_area_ratio)
         if iteration == 1:
-            weights.calibrate(amplitude, histogram, background, area_ratio)
-        total = weights.total(amplitude, histogram, background, area_ratio)
+            weights.calibrate(amplitude, histogram, background)
+        total = weights.total(amplitude, histogram, background)
         total.backward()
         optimizer.step()
         current_input = prediction.detach()
@@ -207,32 +215,33 @@ def main(args):
         if iteration == 1 or iteration % args.log_every == 0 or iteration == args.iterations:
             with torch.no_grad():
                 evaluation_prediction = register_to_source(prediction, source)
-                evaluation_contour = dynamic_contour(evaluation_prediction, contour_sigma, contour_threshold)
+                evaluation_contour = topk_contour(evaluation_prediction, contour_sigma, contour_pixels)
                 amp_cc, phase_error = amplitude_metrics(evaluation_prediction, source)
-                values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(), area_ratio.item(),
+                values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(),
                           psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
                           pearson_cc(evaluation_prediction, source), amp_cc, phase_error,
-                          support_iou(evaluation_contour, source_contour))
+                          support_iou(evaluation_contour, source_mask))
             for key, value in zip(history, values):
                 history[key].append(value)
             elapsed = time.time() - start_time
             eta = elapsed / iteration * (args.iterations - iteration)
-            iou = values[11]
-            print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} area={:.3e} "
+            ssim_value = values[6]
+            iou = values[10]
+            print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} "
                   "ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
-                      iteration, args.iterations, *values[1:6],
-                      values[7], iou,
+                      iteration, args.iterations, *values[1:5],
+                      ssim_value, iou,
                       format_duration(elapsed), format_duration(eta)))
             emit_metric(args.stream_metrics, iteration=iteration, total=total.item(),
-                        iou=iou, ssim=values[7])
+                        iou=iou, ssim=ssim_value)
 
     with torch.no_grad():
         final_prediction = prediction.detach()
         display_prediction = register_to_source(final_prediction, source)
-        final_contour = dynamic_contour(display_prediction, contour_sigma, contour_threshold)
+        final_contour = topk_contour(display_prediction, contour_sigma, contour_pixels)
     plot_real_space(source, display_prediction, padding, os.path.join(output_dir, "real_space.png"))
     plot_spectra(source, display_prediction, os.path.join(output_dir, "spectra.png"))
-    plot_support(source_contour, final_contour, padding, os.path.join(output_dir, "support.png"))
+    plot_support(source_mask, final_contour, padding, os.path.join(output_dir, "support.png"))
     plot_convergence(history, os.path.join(output_dir, "convergence.png"))
     save_history(history, os.path.join(output_dir, "history.csv"))
     save_metrics(history, os.path.join(output_dir, "metrics.csv"))

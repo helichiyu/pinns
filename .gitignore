@@ -1,7 +1,6 @@
 __pycache__/
 .pytest_cache/
 results/
-123.png
-567.png
+images/
 backend/config.py
 .superpowers/
