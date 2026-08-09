@@ -16,21 +16,21 @@ import threading
 import time
 import webbrowser
 
-import numpy as np
 import tornado.ioloop
 import tornado.web
 import tornado.websocket
-from PIL import Image
 
 # Ensure sibling modules (config, train, etc.) are importable.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config  # noqa: E402
-from losses import dynamic_contour  # noqa: E402
+from losses import source_contour  # noqa: E402
 from train import METRIC_PREFIX, RESULT_PREFIX, load_source  # noqa: E402
+from visualization import plot_source_contour_explanation  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND = os.path.join(ROOT, "frontend")
+IMAGES = os.path.join(ROOT, "images")
 PORT = 8770
 
 IMAGE_RE = re.compile(r"\.(png|jpg|jpeg|bmp|tif|tiff)$", re.IGNORECASE)
@@ -79,22 +79,25 @@ class MainHandler(tornado.web.RequestHandler):
 
 class ImagesHandler(tornado.web.RequestHandler):
     def get(self):
-        files = sorted(f for f in os.listdir(ROOT) if IMAGE_RE.search(f))
+        if not os.path.isdir(IMAGES):
+            self.write({"images": []})
+            return
+        files = sorted(f for f in os.listdir(IMAGES) if IMAGE_RE.search(f))
         self.write({"images": files})
 
 
 class PreviewHandler(tornado.web.RequestHandler):
     def post(self):
         req = json.loads(self.request.body)
-        device = "cpu"
-        source, _ = load_source(req["image"], device, req["expand"])
+        source, padding = load_source(req["image"], "cpu", req["expand"])
         sigma = float(req.get("contour_sigma", config.CONTOUR_SIGMA))
         threshold = float(req.get("contour_threshold", config.CONTOUR_THRESHOLD))
-        contour = dynamic_contour(source, sigma, threshold)
-        arr = (contour.squeeze().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+        mask = source_contour(source, sigma, threshold)
+        ratio = mask.sum().item() / mask.numel()
         buf = io.BytesIO()
-        Image.fromarray(arr, mode="L").save(buf, format="PNG")
-        self.write({"image": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()})
+        plot_source_contour_explanation(source, mask, padding, ratio, buf)
+        self.write({"image": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(),
+                    "ratio": ratio})
 
 
 class ExperimentSocket(tornado.websocket.WebSocketHandler):
@@ -157,6 +160,8 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
         cmd += ["--expand", str(exp["expand"])]
         cmd += ["--contour-sigma", str(exp["contour_sigma"])]
         cmd += ["--contour-threshold", str(exp["contour_threshold"])]
+        cmd += ["--share-histogram", str(exp["share_histogram"])]
+        cmd += ["--share-background", str(exp["share_background"])]
         cmd += ["--iterations", str(exp["iterations"])]
         cmd += ["--stream-metrics"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

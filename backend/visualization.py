@@ -1,9 +1,14 @@
 import csv
 
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-from matplotlib.ticker import NullFormatter
+import matplotlib
+
+# 服务端在工作线程里出图，交互式后端（qtagg）在非主线程会失败，必须先切 Agg。
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from matplotlib.ticker import NullFormatter  # noqa: E402
 
 plt.rcParams["font.sans-serif"] = ["SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -75,7 +80,7 @@ def plot_source_contour_explanation(source, contour, padding, ratio, save_path):
         axis.set_title(title, fontsize=13)
         axis.axis("off")
     fig.tight_layout()
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    fig.savefig(save_path, format="png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
