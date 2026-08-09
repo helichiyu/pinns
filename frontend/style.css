@@ -163,6 +163,8 @@ main {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1;
+  min-width: 0;
 }
 
 .field-label {
@@ -181,6 +183,7 @@ select, input[type="text"] {
   color: var(--ink);
   outline: none;
   transition: border-color 0.15s;
+  width: 100%;
 }
 
 select:focus, input[type="number"]:focus { border-color: var(--primary); }
@@ -188,7 +191,6 @@ select:focus, input[type="number"]:focus { border-color: var(--primary); }
 .fields-row {
   display: flex;
   gap: 14px;
-  flex-wrap: wrap;
 }
 
 .preview-btn {

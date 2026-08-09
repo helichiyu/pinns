@@ -161,7 +161,7 @@ function createRow(index) {
   status.textContent = "待机";
   top.appendChild(status);
 
-  // Row 1: image + expand
+  // 第 1 行：图片（独占整行）
   const fieldsRow1 = document.createElement("div");
   fieldsRow1.className = "fields-row";
 
@@ -176,33 +176,40 @@ function createRow(index) {
     imgSel.appendChild(opt);
   });
   imgWrap.appendChild(imgSel);
+  fieldsRow1.appendChild(imgWrap);
+
+  // 第 2 行：画布扩大 + 训练轮数
+  const fieldsRow2 = document.createElement("div");
+  fieldsRow2.className = "fields-row";
 
   const expWrap = document.createElement("div");
   expWrap.className = "field";
   expWrap.innerHTML = '<span class="field-label">画布扩大</span>';
   const expInput = document.createElement("input");
   expInput.type = "text";
-  expInput.min = "1";
-  expInput.max = "8";
   expInput.value = "1";
-  expInput.style.width = "56px";
   expWrap.appendChild(expInput);
 
-  fieldsRow1.append(imgWrap, expWrap);
+  const iterWrap = document.createElement("div");
+  iterWrap.className = "field";
+  iterWrap.innerHTML = '<span class="field-label">训练轮数</span>';
+  const iterInput = document.createElement("input");
+  iterInput.type = "text";
+  iterInput.value = "3000";
+  iterWrap.appendChild(iterInput);
 
-  // Row 2: sigma + threshold + iterations
-  const fieldsRow2 = document.createElement("div");
-  fieldsRow2.className = "fields-row";
+  fieldsRow2.append(expWrap, iterWrap);
+
+  // 第 3 行：高斯半径 + 轮廓阈值
+  const fieldsRow3 = document.createElement("div");
+  fieldsRow3.className = "fields-row";
 
   const sigmaWrap = document.createElement("div");
   sigmaWrap.className = "field";
   sigmaWrap.innerHTML = '<span class="field-label">高斯半径</span>';
   const sigmaInput = document.createElement("input");
   sigmaInput.type = "text";
-  sigmaInput.min = "1";
-  sigmaInput.step = "1";
   sigmaInput.value = "16";
-  sigmaInput.style.width = "48px";
   sigmaWrap.appendChild(sigmaInput);
 
   const threshWrap = document.createElement("div");
@@ -210,25 +217,34 @@ function createRow(index) {
   threshWrap.innerHTML = '<span class="field-label">轮廓阈值</span>';
   const threshInput = document.createElement("input");
   threshInput.type = "text";
-  threshInput.min = "0";
-  threshInput.max = "1";
-  threshInput.step = "0.05";
   threshInput.value = "0.20";
-  threshInput.style.width = "48px";
   threshWrap.appendChild(threshInput);
 
-  const iterWrap = document.createElement("div");
-  iterWrap.className = "field";
-  iterWrap.innerHTML = '<span class="field-label">训练轮数</span>';
-  const iterInput = document.createElement("input");
-  iterInput.type = "text";
-  iterInput.min = "1";
-  iterInput.value = "3000";
-  iterInput.style.width = "64px";
-  iterWrap.appendChild(iterInput);
+  fieldsRow3.append(sigmaWrap, threshWrap);
 
-  fieldsRow2.append(sigmaWrap, threshWrap, iterWrap);
-  params.append(top, fieldsRow1, fieldsRow2);
+  // 第 4 行：直方图权重 + 背景权重（相对振幅项的初始贡献占比）
+  const fieldsRow4 = document.createElement("div");
+  fieldsRow4.className = "fields-row";
+
+  const shareHistWrap = document.createElement("div");
+  shareHistWrap.className = "field";
+  shareHistWrap.innerHTML = '<span class="field-label">直方图权重</span>';
+  const shareHistInput = document.createElement("input");
+  shareHistInput.type = "text";
+  shareHistInput.value = "0.5";
+  shareHistWrap.appendChild(shareHistInput);
+
+  const shareBgWrap = document.createElement("div");
+  shareBgWrap.className = "field";
+  shareBgWrap.innerHTML = '<span class="field-label">背景权重</span>';
+  const shareBgInput = document.createElement("input");
+  shareBgInput.type = "text";
+  shareBgInput.value = "0.10";
+  shareBgWrap.appendChild(shareBgInput);
+
+  fieldsRow4.append(shareHistWrap, shareBgWrap);
+
+  params.append(top, fieldsRow1, fieldsRow2, fieldsRow3, fieldsRow4);
 
   // Charts
   const charts = document.createElement("div");
@@ -280,6 +296,7 @@ function createRow(index) {
   return {
     rootEl: root,
     imgSel, expInput, iterInput, sigmaInput, threshInput,
+    shareHistInput, shareBgInput,
     statusEl: status,
     previewBtn, realBtn,
     lossChart, iouChart,
@@ -294,11 +311,13 @@ function setStatus(exp, text, cls) {
 
 function getConfig(exp) {
   return {
-    image: exp.imgSel.value,
+    image: "images/" + exp.imgSel.value,
     expand: parseInt(exp.expInput.value, 10) || 1,
     iterations: parseInt(exp.iterInput.value, 10) || 1,
     contour_sigma: parseFloat(exp.sigmaInput.value) || 16,
     contour_threshold: parseFloat(exp.threshInput.value) || 0.2,
+    share_histogram: parseFloat(exp.shareHistInput.value) || 0.5,
+    share_background: parseFloat(exp.shareBgInput.value) || 0.1,
   };
 }
 
