@@ -1,13 +1,12 @@
 import torch
 
 from losses import (CalibratedWeights, background_loss,
-                    masked_histogram_cdf_loss, soft_cdf, source_contour,
-                    topk_contour)
+                    masked_histogram_quantile_loss, quantile_ranks,
+                    source_contour, topk_contour)
 
 SIGMA = 4.0
 THRESHOLD = 0.20
 BINS = 64
-SOFTNESS = 0.02
 
 
 def make_disk(size=64, radius=14):
@@ -61,29 +60,60 @@ def test_topk_contour_is_constant():
     assert contour.requires_grad is False
 
 
+def make_target_quantiles(source, mask, ranks):
+    """从源图 mask 内取 B 个分位值，与 train.py 的预计算同形。"""
+    return source[mask > 0.5].sort().values[ranks]
+
+
+def test_quantile_ranks_are_valid():
+    """rank 下标必须严格递增、落在 [0, k) 内，且末位恰为 k-1（覆盖最亮像素）。"""
+    for k in (100, 577, 1024):
+        ranks = quantile_ranks(k, BINS, torch.device("cpu"))
+        assert ranks.numel() == BINS
+        assert ranks[0].item() >= 0
+        assert ranks[-1].item() == k - 1
+        assert bool((ranks.diff() > 0).all())
+
+
 def test_gradient_flows_to_prediction():
     """mask 不可导，但梯度必须经 prediction 回流到网络。"""
     source = make_disk()
     source_mask = source_contour(source, SIGMA, THRESHOLD)
     k = int(source_mask.sum().item())
-    target_cdf = soft_cdf(source[source_mask > 0.5], BINS, SOFTNESS)
+    ranks = quantile_ranks(k, BINS, source.device)
+    target_quantiles = make_target_quantiles(source, source_mask, ranks)
 
     prediction = torch.rand_like(source).requires_grad_(True)
     contour = topk_contour(prediction, SIGMA, k)
     loss = (background_loss(prediction, contour)
-            + masked_histogram_cdf_loss(prediction, contour, target_cdf, BINS, SOFTNESS))
+            + masked_histogram_quantile_loss(prediction, contour, target_quantiles, ranks))
     loss.backward()
     assert prediction.grad is not None
     assert prediction.grad.norm().item() > 0.0
 
 
+def test_quantile_gradient_hits_exactly_bins_pixels():
+    """等点数分箱每轮只有 B 个像素直接收到直方图梯度（其余靠振幅与背景间接训练）。"""
+    source = make_disk()
+    source_mask = source_contour(source, SIGMA, THRESHOLD)
+    k = int(source_mask.sum().item())
+    ranks = quantile_ranks(k, BINS, source.device)
+    target_quantiles = make_target_quantiles(source, source_mask, ranks)
+
+    prediction = torch.rand_like(source).requires_grad_(True)
+    contour = topk_contour(prediction, SIGMA, k)
+    masked_histogram_quantile_loss(prediction, contour, target_quantiles, ranks).backward()
+    assert int((prediction.grad != 0).sum().item()) == BINS
+
+
 def test_masked_histogram_zero_for_identical_distribution():
-    """同一张图与自己比，轮廓内分布完全一致，损失应约为 0。"""
+    """同一张图与自己比，排序后逐位相等，分位值损失严格为 0（无浮点残差）。"""
     source = make_disk()
     mask = source_contour(source, SIGMA, THRESHOLD)
-    target_cdf = soft_cdf(source[mask > 0.5], BINS, SOFTNESS)
-    loss = masked_histogram_cdf_loss(source, mask, target_cdf, BINS, SOFTNESS)
-    assert loss.item() < 1e-12
+    ranks = quantile_ranks(int(mask.sum().item()), BINS, source.device)
+    target_quantiles = make_target_quantiles(source, mask, ranks)
+    loss = masked_histogram_quantile_loss(source, mask, target_quantiles, ranks)
+    assert loss.item() == 0.0
 
 
 def test_background_loss_zero_outside_contour():

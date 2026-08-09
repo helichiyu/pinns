@@ -13,8 +13,8 @@ from PIL import Image
 
 import config
 from losses import (CalibratedWeights, amplitude_mask, background_loss,
-                    masked_histogram_cdf_loss, normalized_log_amplitude_loss,
-                    soft_cdf, source_contour, topk_contour)
+                    masked_histogram_quantile_loss, normalized_log_amplitude_loss,
+                    quantile_ranks, source_contour, topk_contour)
 from model import UNet
 from visualization import (plot_convergence, plot_real_space, plot_spectra,
                            plot_support, save_history, save_metrics)
@@ -180,8 +180,11 @@ def main(args):
     if contour_pixels == 0:
         raise SystemExit("源图轮廓为空（阈值 {} 过高），无法标定像素数 k。".format(contour_threshold))
     source_area_ratio = contour_pixels / source_mask.numel()
-    target_cdf = soft_cdf(source[source_mask > 0.5], config.HISTOGRAM_BINS,
-                          config.HISTOGRAM_SOFTNESS).detach()
+    if config.HISTOGRAM_BINS > contour_pixels:
+        raise SystemExit("直方图箱数 {} 超过轮廓像素数 {}，分位点会重复。".format(
+            config.HISTOGRAM_BINS, contour_pixels))
+    ranks = quantile_ranks(contour_pixels, config.HISTOGRAM_BINS, device)
+    target_quantiles = source[source_mask > 0.5].sort().values[ranks].detach()
     model = UNet(config.BASE_CHANNELS).to(device)
     weights = CalibratedWeights(args.share_histogram, args.share_background).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
@@ -204,8 +207,7 @@ def main(args):
         prediction = model(current_input)
         amplitude = normalized_log_amplitude_loss(prediction, target_amplitude, valid_amplitude)
         contour = topk_contour(prediction, contour_sigma, contour_pixels)
-        histogram = masked_histogram_cdf_loss(prediction, contour, target_cdf,
-                                              config.HISTOGRAM_BINS, config.HISTOGRAM_SOFTNESS)
+        histogram = masked_histogram_quantile_loss(prediction, contour, target_quantiles, ranks)
         background = background_loss(prediction, contour)
         if iteration == 1:
             weights.calibrate(amplitude, histogram, background)

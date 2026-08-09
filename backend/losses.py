@@ -54,20 +54,27 @@ def topk_contour(prediction, sigma, k):
     return mask.view_as(prediction)
 
 
-def soft_cdf(values, bins, softness):
-    """一组像素值的可微软 CDF，长度为 bins。"""
-    centers = torch.linspace(0, 1, bins, device=values.device, dtype=values.dtype)
-    return torch.sigmoid((centers[:, None] - values[None, :]) / softness).mean(dim=1)
+def quantile_ranks(pixels, bins, device):
+    """等点数分箱的 rank 下标：把 k 个排序后的像素切成 bins 段，取每段末位。
+
+    整数运算，训练前算一次复用。要求 bins ≤ pixels，否则首个下标为负、会静默
+    绕回末位，拿到错的分位值——调用方须先校验。
+    """
+    return (torch.arange(1, bins + 1, device=device) * pixels // bins) - 1
 
 
-def masked_histogram_cdf_loss(prediction, prediction_mask, target_cdf, bins, softness):
-    """只在轮廓内比较分布。
+def masked_histogram_quantile_loss(prediction, prediction_mask, target_quantiles, ranks):
+    """只在轮廓内比较分布：等点数分箱，比 B 个分位点的像素值。
 
+    每箱点数相等，所以能比的只有箱边界（分位值）——比箱内计数是常数，没意义。
     预测分布取自输出自己的 mask，而不是源图 mask——后者等于把源图轮廓的位置
-    当成监督。target_cdf 由调用方用源图 mask 预先算好，每轮复用。
+    当成监督。target_quantiles 由调用方用源图 mask 预先算好，每轮复用。
+
+    sort 与固定下标 gather 都原生可导：排在第 j 名的像素领走 sorted[j] 的梯度，
+    所以每轮恰有 B 个像素直接收到直方图梯度。
     """
     values = prediction[prediction_mask > 0.5]
-    return F.mse_loss(soft_cdf(values, bins, softness), target_cdf)
+    return F.mse_loss(values.sort().values[ranks], target_quantiles)
 
 
 def background_loss(prediction, contour):
