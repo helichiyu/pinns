@@ -125,8 +125,7 @@ async function fetchPreview(image, expand, contourSigma, contourThreshold) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image, expand, contour_sigma: contourSigma, contour_threshold: contourThreshold }),
   });
-  const data = await res.json();
-  return data.image;
+  return await res.json();
 }
 
 // ---- Experiment rows ----
@@ -269,7 +268,7 @@ function createRow(index) {
 
   const previewBtn = document.createElement("button");
   previewBtn.className = "preview-btn";
-  previewBtn.textContent = "预览轮廓图";
+  previewBtn.textContent = "轮廓对比图";
   previewBtn.addEventListener("click", () => {
     const exp = experiments[index];
     if (exp && exp.outputDir) {
@@ -339,10 +338,12 @@ function openModalLoading(title) {
 async function doPreview(index) {
   const exp = experiments[index];
   const cfg = getConfig(exp);
-  openModalLoading("轮廓预览");
+  openModalLoading("轮廓对比图");
   try {
-    const src = await fetchPreview(cfg.image, cfg.expand, cfg.contour_sigma, cfg.contour_threshold);
-    document.getElementById("preview-img").src = src;
+    const data = await fetchPreview(cfg.image, cfg.expand, cfg.contour_sigma, cfg.contour_threshold);
+    document.getElementById("modal-title").textContent =
+      "轮廓对比图 · 轮廓占比 " + (data.ratio * 100).toFixed(2) + "%";
+    document.getElementById("preview-img").src = data.image;
     document.getElementById("modal-loading").classList.add("hidden");
   } catch (e) {
     appendTerminal("预览出错：" + e.message, true);
@@ -421,7 +422,6 @@ function handleMsg(msg) {
         setStatus(exp, "已完成", "status-done");
         if (msg.output_dir) {
           exp.outputDir = msg.output_dir;
-          exp.previewBtn.textContent = "轮廓对比图";
           exp.realBtn.disabled = false;
         }
       }
@@ -461,7 +461,6 @@ function startExperiments() {
     exp.lossChart.clear();
     exp.iouChart.clear();
     exp.outputDir = null;
-    exp.previewBtn.textContent = "预览轮廓图";
     exp.realBtn.disabled = true;
   });
   document.getElementById("terminal").innerHTML = "";
@@ -497,7 +496,6 @@ function resetAll() {
     exp.lossChart.clear();
     exp.iouChart.clear();
     exp.outputDir = null;
-    exp.previewBtn.textContent = "预览轮廓图";
     exp.realBtn.disabled = true;
   });
   document.getElementById("terminal").innerHTML = "";
