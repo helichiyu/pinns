@@ -281,10 +281,17 @@ function createRow(index) {
 
   const realBtn = document.createElement("button");
   realBtn.className = "preview-btn";
-  realBtn.textContent = "效果对比图";
+  realBtn.textContent = "结果对比图";
   realBtn.disabled = true;
-  realBtn.addEventListener("click", () => showResultImage(index, "real_space.png", "效果对比图"));
+  realBtn.addEventListener("click", () => showResultImage(index, "real_space.png", "结果对比图"));
   btnRow.appendChild(realBtn);
+
+  const curveBtn = document.createElement("button");
+  curveBtn.className = "preview-btn";
+  curveBtn.textContent = "结果曲线图";
+  curveBtn.disabled = true;
+  curveBtn.addEventListener("click", () => showResultImage(index, "convergence.png", "结果曲线图"));
+  btnRow.appendChild(curveBtn);
 
   root.append(main, btnRow);
   document.getElementById("experiments").appendChild(root);
@@ -297,7 +304,7 @@ function createRow(index) {
     imgSel, expInput, iterInput, sigmaInput, threshInput,
     shareHistInput, shareBgInput,
     statusEl: status,
-    previewBtn, realBtn,
+    previewBtn, realBtn, curveBtn,
     lossChart, iouChart,
     outputDir: null,
   };
@@ -423,6 +430,7 @@ function handleMsg(msg) {
         if (msg.output_dir) {
           exp.outputDir = msg.output_dir;
           exp.realBtn.disabled = false;
+          exp.curveBtn.disabled = false;
         }
       }
       break;
@@ -462,6 +470,7 @@ function startExperiments() {
     exp.iouChart.clear();
     exp.outputDir = null;
     exp.realBtn.disabled = true;
+    exp.curveBtn.disabled = true;
   });
   document.getElementById("terminal").innerHTML = "";
   running = true;
@@ -497,6 +506,7 @@ function resetAll() {
     exp.iouChart.clear();
     exp.outputDir = null;
     exp.realBtn.disabled = true;
+    exp.curveBtn.disabled = true;
   });
   document.getElementById("terminal").innerHTML = "";
   document.getElementById("inc-btn").disabled = experiments.length >= MAX_EXPERIMENTS;

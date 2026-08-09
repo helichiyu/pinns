@@ -88,8 +88,8 @@ def plot_convergence(history, save_path):
     panels = (("total", "总损失"), ("amplitude", "振幅损失"), ("histogram", "轮廓内直方图损失"),
               ("background", "背景损失"),
               ("psnr", "PSNR (dB)"), ("ssim", "SSIM"), ("pearson_cc", "Pearson CC"),
-              ("amp_cc", "振幅域 CC"), ("phase_error", "平均相位误差 (rad)"), ("support_iou", "粗轮廓 IoU"))
-    ncols = 4
+              ("amp_cc", "振幅域 CC"), ("support_iou", "粗轮廓 IoU"))
+    ncols = 3
     nrows = (len(panels) + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.6, nrows * 4))
     log_keys = ("amplitude", "histogram", "background")
@@ -125,7 +125,7 @@ def save_history(history, save_path):
 
 
 def save_metrics(history, save_path):
-    keys = ("psnr", "ssim", "pearson_cc", "amp_cc", "phase_error", "support_iou")
+    keys = ("psnr", "ssim", "pearson_cc", "amp_cc", "support_iou")
     with open(save_path, "w", newline="", encoding="utf-8-sig") as file:
         writer = csv.writer(file)
         writer.writerow(("指标", "末轮值"))

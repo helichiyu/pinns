@@ -25,7 +25,7 @@ METRIC_PREFIX = "__METRIC__"
 RESULT_PREFIX = "__RESULT__"
 
 HISTORY_KEYS = ("iteration", "total", "amplitude", "histogram", "background",
-                "psnr", "ssim", "pearson_cc", "amp_cc", "phase_error", "support_iou")
+                "psnr", "ssim", "pearson_cc", "amp_cc", "support_iou")
 
 
 def format_duration(seconds):
@@ -98,16 +98,14 @@ def pearson_cc(prediction, source):
     return (prediction * source).sum().div(prediction.norm() * source.norm() + 1e-12).item()
 
 
-def amplitude_metrics(prediction, source):
+def amplitude_cc_metric(prediction, source):
     target_spectrum = torch.fft.fft2(source)
     prediction_spectrum = torch.fft.fft2(prediction)
     target_amplitude = torch.abs(target_spectrum)
     prediction_amplitude = torch.abs(prediction_spectrum)
     phase_difference = torch.angle(target_spectrum) - torch.angle(prediction_spectrum)
     amplitude_cc = (target_amplitude * prediction_amplitude * torch.cos(phase_difference)).sum()
-    amplitude_cc = amplitude_cc.div(target_amplitude.norm() * prediction_amplitude.norm() + 1e-12).item()
-    phase_error = torch.arccos(torch.cos(phase_difference)).mean().item()
-    return amplitude_cc, phase_error
+    return amplitude_cc.div(target_amplitude.norm() * prediction_amplitude.norm() + 1e-12).item()
 
 
 def support_iou(prediction_contour, source_contour):
@@ -220,17 +218,17 @@ def main(args):
             with torch.no_grad():
                 evaluation_prediction = register_to_source(prediction, source)
                 evaluation_contour = topk_contour(evaluation_prediction, contour_sigma, contour_pixels)
-                amp_cc, phase_error = amplitude_metrics(evaluation_prediction, source)
+                amp_cc = amplitude_cc_metric(evaluation_prediction, source)
                 values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(),
                           psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
-                          pearson_cc(evaluation_prediction, source), amp_cc, phase_error,
+                          pearson_cc(evaluation_prediction, source), amp_cc,
                           support_iou(evaluation_contour, source_mask))
             for key, value in zip(history, values):
                 history[key].append(value)
             elapsed = time.time() - start_time
             eta = elapsed / iteration * (args.iterations - iteration)
             ssim_value = values[6]
-            iou = values[10]
+            iou = values[9]
             print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} "
                   "ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
                       iteration, args.iterations, *values[1:5],
