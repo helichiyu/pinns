@@ -43,7 +43,8 @@ def load_source(path, device, expand=1):
     expand:
         Canvas expansion factor (1 = no expansion). When > 1 the object is
         centered on a zero-filled canvas that is `expand` times larger per
-        dimension (FFT oversampling condition).
+        dimension (FFT oversampling condition). 可以是小数（如 1.5）；扩大后的
+        边长向下取整，随后还要 pad 到 16 的倍数，所以实际倍率会略高于名义值。
     """
     channel = np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
 
@@ -53,7 +54,7 @@ def load_source(path, device, expand=1):
 
     height, width = source.shape[-2:]
     if expand > 1:
-        new_h, new_w = expand * height, expand * width
+        new_h, new_w = int(expand * height), int(expand * width)
         canvas = torch.zeros(1, 1, new_h, new_w, dtype=source.dtype, device=device)
         top, left = (new_h - height) // 2, (new_w - width) // 2
         canvas[..., top:top + height, left:left + width] = source
@@ -145,7 +146,8 @@ def emit_metric(stream, **kwargs):
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified single-UNet phase retrieval")
     parser.add_argument("--image", default=config.IMAGE_PATH)
-    parser.add_argument("--expand", type=int, default=1, help="canvas expansion factor (1 = no expansion)")
+    parser.add_argument("--expand", type=float, default=1,
+                        help="canvas expansion factor (1 = no expansion, 可为小数如 1.5)")
     parser.add_argument("--contour-sigma", type=float, default=config.CONTOUR_SIGMA,
                         help="Gaussian blur radius for contour extraction")
     parser.add_argument("--contour-threshold", type=float, default=config.CONTOUR_THRESHOLD,
@@ -186,14 +188,16 @@ def main(args):
     weights = CalibratedWeights(args.share_histogram, args.share_background).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     current_input = random_phase_initialization(target_amplitude)
-    tag = "{}_x{}".format(os.path.splitext(os.path.basename(args.image))[0], args.expand)
+    # expand 是浮点，整数值去掉尾随 .0，让目录名保持 x1 / x2 而不是 x1.0 / x2.0
+    expand_tag = "{:g}".format(args.expand)
+    tag = "{}_x{}".format(os.path.splitext(os.path.basename(args.image))[0], expand_tag)
     output_dir = args.output or os.path.join(config.RESULTS_DIR,
                                              datetime.now().strftime("run_{}_%Y%m%d_%H%M%S".format(tag)))
     os.makedirs(output_dir, exist_ok=True)
     history = {key: [] for key in HISTORY_KEYS}
 
     print("Device: {}; image: {}; expand: {}x; canvas: {}; iterations: {}".format(
-        device, args.image, args.expand, tuple(source.shape[-2:]), args.iterations))
+        device, args.image, expand_tag, tuple(source.shape[-2:]), args.iterations))
     print("Source contour ratio: {:.2%} ({} px)".format(source_area_ratio, contour_pixels))
     start_time = time.time()
     prediction = None

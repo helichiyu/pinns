@@ -65,7 +65,7 @@ D:\anaconda3\envs\use\python.exe backend\train.py --image images/567.png --share
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--image` | `config.IMAGE_PATH` | 图片文件名 |
-| `--expand` | `1` | 画布扩大倍数；`1`=不扩大，`2`=每维扩大 2 倍。扩大后统一 pad 到 16 的倍数（UNet 四级下采样，固定不可调） |
+| `--expand` | `1` | 画布扩大倍数；`1`=不扩大，`2`=每维扩大 2 倍。**可为小数**（如 `1.5`）：扩大后的边长向下取整，随后统一 pad 到 16 的倍数（UNet 四级下采样，固定不可调），所以实际倍率会略高于名义值。例如 567（600×302）填 `1.5` 得到 464×912，实际约 1.54×1.52 |
 | `--contour-sigma` | `config.CONTOUR_SIGMA` (16) | 高斯模糊半径，控制两侧轮廓提取的尺度（源图与每轮输出都用同一个值） |
 | `--contour-threshold` | `config.CONTOUR_THRESHOLD` (0.20) | 源图轮廓的相对峰值阈值。**只在训练前用一次**，用来二值化源图 mask 并数出像素数 `k`；输出侧不用阈值，改按 `k` 取 top-k |
 | `--share-histogram` | `config.SHARE_HISTOGRAM` (0.5) | 轮廓内直方图项初始贡献占振幅项的比例 |

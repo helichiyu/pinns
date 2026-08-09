@@ -311,7 +311,7 @@ function setStatus(exp, text, cls) {
 function getConfig(exp) {
   return {
     image: "images/" + exp.imgSel.value,
-    expand: parseInt(exp.expInput.value, 10) || 1,
+    expand: parseFloat(exp.expInput.value) || 1,
     iterations: parseInt(exp.iterInput.value, 10) || 1,
     contour_sigma: parseFloat(exp.sigmaInput.value) || 16,
     contour_threshold: parseFloat(exp.threshInput.value) || 0.2,
