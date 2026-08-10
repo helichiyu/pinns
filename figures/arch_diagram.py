@@ -68,7 +68,9 @@ ax.text((b["E1"][0] + b["D1"][0]) / 2, 5.90, "跳跃拼接（skip）",
 # input
 ax.text(-0.7, 4.90, "输入", ha="center", va="bottom",
         fontsize=11, fontweight="bold")
-ax.text(-0.7, 4.58, "已知振幅 + 随机相位", ha="center", va="top", fontsize=9)
+ax.text(-0.7, 4.58, "Patterson map", ha="center", va="top", fontsize=9)
+ax.text(-0.7, 4.28, "$\\mathrm{IFFT}(|F|^2 \\cdot \\mathrm{mask})$", ha="center", va="top",
+        fontsize=8, color="#555555")
 ax.add_patch(FancyArrowPatch((-0.15, 4.70), edge("E1", "l"),
                              arrowstyle="-|>", mutation_scale=14,
                              linewidth=1.3, color="black"))

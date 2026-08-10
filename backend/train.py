@@ -74,10 +74,26 @@ def load_source(path, device, expand=1):
     return source, (left, right, top, bottom)
 
 
-def random_phase_initialization(target_amplitude):
-    phase = torch.rand_like(target_amplitude) * (2 * np.pi) - np.pi
-    initial = torch.real(torch.fft.ifft2(target_amplitude * torch.exp(1j * phase))).abs()
-    return initial / initial.amax().clamp_min(1e-6)
+def patterson_initialization(target_amplitude, valid_amplitude):
+    """Patterson map 作为首轮输入：P = IFFT(|F|² · mask)，即振幅取平方、相位全置零。
+
+    P 数学上就是物体自身的自相关函数，不需要相位就能从实测振幅直接算出，比随机
+    相位携带真实结构信息（物体尺寸、内部间距）。
+
+    mask 复用振幅损失的低频圆盘，语义一致：输入里看不到的低频，损失里也不罚。
+    真正的自相关恒非负，但挖掉频谱分量后 IFFT 不再保证这一点（实测约一半像素
+    为负），所以用 min-max 归一化而不是截零。
+
+    fftshift 把原点从 [0, 0] 搬到画布中心：不 shift 的话周期延拓会把自相关切成
+    四块贴在四个角，而源图物体居中、第 2 轮起的输入（上一轮输出）也居中。
+
+    注意 expand=1 时自相关会卷绕自叠——自相关支撑是物体的 2 倍，画布不够大就绕
+    回来叠自己，要干净的 Patterson 需要 expand≥2。
+    """
+    intensity = target_amplitude.square() * valid_amplitude
+    patterson = torch.fft.fftshift(torch.real(torch.fft.ifft2(intensity)), dim=(-2, -1))
+    low, high = patterson.amin(), patterson.amax()
+    return (patterson - low) / (high - low).clamp_min(1e-12)
 
 
 def psnr(prediction, source):
@@ -210,7 +226,7 @@ def main(args):
     # s_i 与网络参数进同一个 Adam、同一个学习率（Kendall 原文做法）。
     optimizer = torch.optim.Adam(list(model.parameters()) + list(weights.parameters()),
                                  lr=config.LEARNING_RATE)
-    current_input = random_phase_initialization(target_amplitude)
+    current_input = patterson_initialization(target_amplitude, valid_amplitude)
     # expand 是浮点，整数值去掉尾随 .0，让目录名保持 x1 / x2 而不是 x1.0 / x2.0
     expand_tag = "{:g}".format(args.expand)
     tag = "{}_x{}".format(os.path.splitext(os.path.basename(args.image))[0], expand_tag)
