@@ -1,6 +1,6 @@
 import torch
 
-from losses import (CalibratedWeights, background_loss,
+from losses import (UncertaintyWeights, background_loss,
                     masked_histogram_quantile_loss, quantile_ranks,
                     source_contour, topk_contour)
 
@@ -127,14 +127,73 @@ def test_background_loss_zero_outside_contour():
     assert background_loss(dirty, contour).item() > 0.0
 
 
-def test_calibrate_makes_contributions_match_shares():
-    """标定后，两项的加权贡献应恰好等于 SHARE × 振幅损失。"""
-    weights = CalibratedWeights(0.5, 0.10)
-    amplitude = torch.tensor(2e-4)
-    histogram = torch.tensor(3e-2)
-    background = torch.tensor(7e-3)
-    weights.calibrate(amplitude, histogram, background)
-    contributions = weights.betas * torch.stack([histogram, background])
-    assert torch.allclose(contributions, amplitude * torch.tensor([0.5, 0.10]), rtol=1e-5)
-    total = weights.total(amplitude, histogram, background)
-    assert torch.allclose(total, amplitude * 1.60, rtol=1e-5)
+SHARES = (1.0, 0.5, 0.10)
+FIRST = (torch.tensor(2e-4), torch.tensor(3e-2), torch.tensor(7e-3))
+
+
+def make_weights():
+    """建好 UncertaintyWeights 并用首轮损失完成归一化基准记录。"""
+    weights = UncertaintyWeights(SHARES[1], SHARES[2])
+    weights.initialize(*FIRST)
+    return weights
+
+
+def test_initial_contributions_match_shares():
+    """s_i 初值为 0、L̂_i,0 = 1，所以首轮三项贡献恰好等于 w_i。"""
+    weights = make_weights()
+    contributions = weights.contributions(*FIRST)
+    assert torch.allclose(contributions, torch.tensor(SHARES), rtol=1e-5)
+    # total 首轮 = Σ w_i·(1 + 0) = Σ w_i
+    assert torch.allclose(weights.total(*FIRST), torch.tensor(sum(SHARES)), rtol=1e-5)
+
+
+def test_contributions_converge_to_shares_at_fixed_point():
+    """不动点 exp(-s_i) = 1/L̂_i 处，三项贡献仍等于 w_i——与损失降了多少无关。
+
+    这是 w_i 乘在方括号外的关键性质：w_i 若乘进括号内，贡献会收敛到 w_i·L_i,0，
+    辅助项被压掉几千倍。
+    """
+    weights = make_weights()
+    drop = torch.tensor([285.9, 82.0, 41.6])          # 各项损失下降倍数（实测量级）
+    later = [first / factor for first, factor in zip(FIRST, drop)]
+    with torch.no_grad():
+        weights.log_variance.copy_(torch.log(1.0 / drop))   # s_i = log(L̂_i)
+    contributions = weights.contributions(*later)
+    assert torch.allclose(contributions, torch.tensor(SHARES), rtol=1e-4)
+
+
+def test_log_variance_gradient_vanishes_at_first_step():
+    """首轮 s_i = 0、L̂_i = 1 恰好就是不动点，所以 s 的梯度精确为 0。
+
+    ∂L/∂s_i = w_i·(1 - exp(-s_i)·L̂_i)，代入 s_i=0、L̂_i=1 得 0。这不是 bug：
+    s 要等损失开始下降（L̂_i < 1）才有驱动力。
+    """
+    weights = make_weights()
+    assert weights.log_variance.requires_grad
+    weights.total(*FIRST).backward()
+    assert weights.log_variance.grad is not None
+    assert torch.allclose(weights.log_variance.grad, torch.zeros(3), atol=1e-7)
+
+
+def test_log_variance_receives_gradient_once_losses_drop():
+    """损失下降后 L̂_i < 1，三个 s_i 都收到正梯度（推 s 往负走、放大权重）。"""
+    weights = make_weights()
+    later = [loss / 10.0 for loss in FIRST]
+    weights.total(*later).backward()
+    # ∂L/∂s_i = w_i·(1 - L̂_i) = w_i·0.9 > 0
+    expected = torch.tensor(SHARES) * 0.9
+    assert torch.allclose(weights.log_variance.grad, expected, rtol=1e-5)
+
+
+def test_total_goes_negative_at_fixed_point_but_weighted_stays_positive():
+    """不动点处 total 因 +s_i 而为负，加权损失仍为正——两者读数含义不同。"""
+    weights = make_weights()
+    drop = torch.tensor([285.9, 82.0, 41.6])
+    later = [loss / factor for loss, factor in zip(FIRST, drop)]
+    with torch.no_grad():
+        weights.log_variance.copy_(torch.log(1.0 / drop))
+    assert bool((weights.contributions(*later) > 0).all())
+    # total = Σ w_i·(1 + s_i)，s_i = -log(drop) 远小于 -1，故为负
+    expected = (torch.tensor(SHARES) * (1.0 + weights.log_variance)).sum()
+    assert torch.allclose(weights.total(*later), expected, rtol=1e-4)
+    assert weights.total(*later).item() < 0.0

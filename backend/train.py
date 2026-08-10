@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 import config
-from losses import (CalibratedWeights, amplitude_mask, background_loss,
+from losses import (UncertaintyWeights, amplitude_mask, background_loss,
                     masked_histogram_quantile_loss, normalized_log_amplitude_loss,
                     quantile_ranks, source_contour, topk_contour)
 from model import UNet
@@ -25,8 +25,10 @@ from visualization import (plot_convergence, plot_real_space, plot_spectra,
 METRIC_PREFIX = "__METRIC__"
 RESULT_PREFIX = "__RESULT__"
 
+# 末三列是 Kendall 可学习权重的对数方差 s_i，只入 CSV，不进收敛图。
 HISTORY_KEYS = ("iteration", "total", "amplitude", "histogram", "background",
-                "psnr", "ssim", "pearson_cc", "amp_cc", "support_iou")
+                "psnr", "ssim", "pearson_cc", "amp_cc", "support_iou",
+                "s_amplitude", "s_histogram", "s_background")
 
 
 def format_duration(seconds):
@@ -204,8 +206,10 @@ def main(args):
     ranks = quantile_ranks(contour_pixels, config.HISTOGRAM_BINS, device)
     target_quantiles = source[source_mask > 0.5].sort().values[ranks].detach()
     model = UNet(config.BASE_CHANNELS).to(device)
-    weights = CalibratedWeights(args.share_histogram, args.share_background).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
+    weights = UncertaintyWeights(args.share_histogram, args.share_background).to(device)
+    # s_i 与网络参数进同一个 Adam、同一个学习率（Kendall 原文做法）。
+    optimizer = torch.optim.Adam(list(model.parameters()) + list(weights.parameters()),
+                                 lr=config.LEARNING_RATE)
     current_input = random_phase_initialization(target_amplitude)
     # expand 是浮点，整数值去掉尾随 .0，让目录名保持 x1 / x2 而不是 x1.0 / x2.0
     expand_tag = "{:g}".format(args.expand)
@@ -235,7 +239,7 @@ def main(args):
         histogram = masked_histogram_quantile_loss(prediction, contour, target_quantiles, ranks)
         background = background_loss(prediction, contour)
         if iteration == 1:
-            weights.calibrate(amplitude, histogram, background)
+            weights.initialize(amplitude, histogram, background)
         total = weights.total(amplitude, histogram, background)
         total.backward()
         optimizer.step()
@@ -246,10 +250,16 @@ def main(args):
                 evaluation_prediction = register_to_source(prediction, source)
                 evaluation_contour = topk_contour(evaluation_prediction, contour_sigma, contour_pixels)
                 amp_cc = amplitude_cc_metric(evaluation_prediction, source)
+                # 本块在 optimizer.step() 之后，所以 s_i 比 total 领先一个 Adam 步
+                # （差约 1e-4，不影响分析）。每轮同步 s 到 CPU 会拖慢训练，不值得。
+                log_variance = weights.log_variance.tolist()
+                # 前端实时曲线用加权损失：total 含 +s_i、会变负，读不出损失是否在降。
+                weighted = weights.contributions(amplitude, histogram, background).sum().item()
                 values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(),
                           psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
                           pearson_cc(evaluation_prediction, source), amp_cc,
-                          support_iou(evaluation_contour, source_mask))
+                          support_iou(evaluation_contour, source_mask),
+                          *log_variance)
             for key, value in zip(history, values):
                 history[key].append(value)
             elapsed = time.time() - start_time
@@ -261,7 +271,7 @@ def main(args):
                       iteration, args.iterations, *values[1:5],
                       ssim_value, iou,
                       format_duration(elapsed), format_duration(eta)))
-            emit_metric(args.stream_metrics, iteration=iteration, total=total.item(),
+            emit_metric(args.stream_metrics, iteration=iteration, total=weighted,
                         iou=iou, ssim=ssim_value)
 
     with torch.no_grad():

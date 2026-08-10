@@ -86,33 +86,56 @@ def background_loss(prediction, contour):
     return torch.mean(((1.0 - contour) * prediction).square())
 
 
-class CalibratedWeights(nn.Module):
-    """固定权重的损失组合，权重由首步前向自动标定。
+class UncertaintyWeights(nn.Module):
+    """Kendall 同方差不确定性加权，外层再乘固定的目标贡献比。
 
-        L = L_amp + β_hist·L_hist + β_bg·L_bg
+        L = Σ_i w_i · [ exp(-s_i) · L̂_i + s_i ]，   L̂_i = L_i / L_i,0
 
-    振幅是唯一的硬数据，权重恒为 1。另两项是静态罚项，β 在第一次前向定一次，
-    使各项的初始加权贡献等于 SHARE_i × L_amp,0。SHARE_i 按各约束的可信度排定
-    （振幅 > 轮廓内直方图 > 背景），是全局常数而非每图超参：换图片时各 L_i,0
-    都变、β 跟着变，但贡献占比不变。
+    `s_i = log σ_i²` 是可学习参数（Kendall 2017，arXiv:1705.07115），与网络参数
+    进同一个 Adam。`exp(-s_i)` 是自适应权重，`+ s_i` 是阻止权重趋零的正则项。
 
-    没有任何一项带自适应拉格朗日乘子。早先给占比项配对偶变量做梯度上升，收敛
-    末期 θ 与 λ 互相追逐形成极限环，损失上下振荡；静态罚项没有这个反馈回路。
+    两处设计与原式不同，各有其必要性：
+
+    1. **各项先除以首轮实测值 L_i,0**。三项损失的原始量级差近四千倍（振幅在
+       log1p 压缩后的 18 万个频点上求 MSE，天然是 1e-5；直方图是 100 个像素值的
+       MSE；背景是全图 pred² 的均值），不归一化则 `s_i = 0` 的开局会把辅助项放大
+       数千倍，而全黑解能让背景损失精确归零 —— 大概率直接塌缩。归一化后 L̂_i,0 = 1，
+       `s_i = 0` 正是原文初值，无需额外的初始化步骤。
+
+    2. **w_i 乘在方括号外**。对 s_i 求导时 w_i 被约掉，不动点仍是 exp(-s_i) = 1/L̂_i，
+       但各项的实际加权贡献收敛到 w_i 本身，即全程维持 1 : w_hist : w_bg，而不是
+       原式的三项等权。w_i 若乘进方括号内（作用在 L̂_i 上），不动点会让贡献收敛到
+       w_i·L_i,0 —— 辅助项被压掉几千倍，退化成"振幅独占"，即 docs 第 6.2 节记录的
+       旧失败形态。
+
+    与先前 CalibratedWeights 的关系：后者的 β_i = SHARE_i·L_amp,0/L_i,0，与本式首轮
+    的有效权重 w_i/L_i,0 只差一个全局公因子 L_amp,0，而 Adam 对损失的全局缩放不敏感
+    （m/√v 归一化）。所以第一轮的网络更新与固定权重方案一致，差异纯粹来自 s 可学。
     """
 
     def __init__(self, share_histogram, share_background):
         super().__init__()
-        self.shares = (share_histogram, share_background)
-        self.register_buffer("betas", torch.zeros(2))   # 顺序：直方图、背景
-
-    def total(self, amplitude, histogram, background):
-        weighted = self.betas * torch.stack([histogram, background])
-        return amplitude + weighted.sum()
+        # 顺序统一为：振幅、直方图、背景
+        self.log_variance = nn.Parameter(torch.zeros(3))
+        self.register_buffer("shares", torch.tensor([1.0, share_histogram, share_background]))
+        self.register_buffer("initial", torch.ones(3))
 
     @torch.no_grad()
-    def calibrate(self, amplitude, histogram, background):
-        """首步标定：β_i = SHARE_i × L_amp,0 / L_i,0。"""
-        anchor = amplitude.detach().clamp_min(1e-12)
-        initial = torch.stack([loss.detach() for loss in (histogram, background)])
-        shares = torch.tensor(self.shares, device=initial.device, dtype=initial.dtype)
-        self.betas.copy_(shares * anchor / initial.clamp_min(1e-12))
+    def initialize(self, amplitude, histogram, background):
+        """记录首轮三项损失作为归一化基准 L_i,0。"""
+        losses = torch.stack([loss.detach() for loss in (amplitude, histogram, background)])
+        self.initial.copy_(losses.clamp_min(1e-12))
+
+    def total(self, amplitude, histogram, background):
+        """被最小化的目标。含 +s_i 正则项，s_i 变负时会小于 0。"""
+        contributions = self.contributions(amplitude, histogram, background)
+        return (contributions + self.shares * self.log_variance).sum()
+
+    def contributions(self, amplitude, histogram, background):
+        """三项的实际加权贡献 w_i·exp(-s_i)·L̂_i，收敛目标是 w_i 本身。
+
+        它们的和是"加权损失"：不含 +s_i，所以只反映损失下降、不反映 s 走了多远，
+        量级也与固定权重方案的 total 可比。total 变小可能只是 s 在适配。
+        """
+        normalized = torch.stack([amplitude, histogram, background]) / self.initial
+        return self.shares * torch.exp(-self.log_variance) * normalized
