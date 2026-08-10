@@ -13,20 +13,35 @@ def gaussian_blur(image, sigma):
     return F.conv2d(image, kernel, padding=radius)
 
 
-def amplitude_mask(target_amplitude):
-    """只排除直流点，其余频点（含高频）全部参与损失。
+def amplitude_mask(target_amplitude, radius):
+    """挖掉以直流为中心的低频圆盘，其余频点（含高频）全部参与损失。
 
-    直流点等于全图像素总和，是整幅振幅谱里最大的一个数，留着它损失会几乎只在
-    调整图像总亮度。高频虽然幅值小、含噪，但决定重建的锐度，不排除。
+    直流点等于全图像素总和，紧邻它的几圈低频同样是整幅谱里数值最大的一批，留着
+    损失会几乎只在调整整体亮度和大尺度明暗。高频虽然幅值小、含噪，但决定重建的
+    锐度，不排除。
+
+    fft2 没有 fftshift，直流在 [0, 0]、低频绕到四个角，所以频率距离要取环绕后的
+    最小值，不能直接切一块方块。radius=3.0 时挖掉 29 个点。
+
+    只在算损失时挖：训练过程本身用的仍是完整的 prediction，没有任何频域裁剪。
     """
-    mask = torch.ones_like(target_amplitude, dtype=torch.bool)
-    mask[..., 0, 0] = False
-    return mask
+    height, width = target_amplitude.shape[-2:]
+    device = target_amplitude.device
+    offset_y = torch.arange(height, device=device)
+    offset_y = torch.minimum(offset_y, height - offset_y)
+    offset_x = torch.arange(width, device=device)
+    offset_x = torch.minimum(offset_x, width - offset_x)
+    distance = offset_y[:, None].square() + offset_x[None, :].square()
+    return (distance > radius**2).expand_as(target_amplitude)
 
 
 def normalized_log_amplitude_loss(prediction, target_amplitude, valid_mask):
+    """归一化基准取挖洞后的最大振幅，即参与损失的频点里最大的那个。
+
+    用被挖掉的直流当基准会让剩下的频点全挤在 log1p 的近零段，动态范围浪费掉。
+    """
     prediction_amplitude = torch.abs(torch.fft.fft2(prediction))
-    scale = target_amplitude.amax().detach().clamp_min(1e-8)
+    scale = target_amplitude[valid_mask].amax().detach().clamp_min(1e-8)
     prediction_log = torch.log1p(prediction_amplitude / scale)
     target_log = torch.log1p(target_amplitude / scale)
     return F.mse_loss(prediction_log[valid_mask], target_log[valid_mask])

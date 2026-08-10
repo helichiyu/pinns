@@ -1,12 +1,13 @@
 import torch
 
-from losses import (UncertaintyWeights, background_loss,
-                    masked_histogram_quantile_loss, quantile_ranks,
-                    source_contour, topk_contour)
+from losses import (UncertaintyWeights, amplitude_mask, background_loss,
+                    masked_histogram_quantile_loss, normalized_log_amplitude_loss,
+                    quantile_ranks, source_contour, topk_contour)
 
 SIGMA = 4.0
 THRESHOLD = 0.20
 BINS = 64
+DC_RADIUS = 3.0
 
 
 def make_disk(size=64, radius=14):
@@ -15,6 +16,46 @@ def make_disk(size=64, radius=14):
     distance = (axis[:, None].square() + axis[None, :].square()).sqrt()
     disk = (1.0 - distance / radius).clamp_min(0.0)
     return disk[None, None]
+
+
+def test_amplitude_mask_excludes_expected_point_count():
+    """挖掉的是整数格点圆盘，点数只由半径决定，与画布尺寸无关。"""
+    amplitude = torch.rand(1, 1, 64, 80)
+    for radius, expected in ((2.0, 13), (2.5, 21), (3.0, 29)):
+        excluded = int((~amplitude_mask(amplitude, radius)).sum().item())
+        assert excluded == expected
+
+
+def test_amplitude_mask_wraps_to_corners():
+    """fft2 未做 fftshift，低频绕到四角，所以排除点必须出现在两端而不是中间。"""
+    height, width = 64, 80
+    mask = amplitude_mask(torch.rand(1, 1, height, width), DC_RADIUS)
+    rows, columns = (~mask[0, 0]).nonzero(as_tuple=True)
+    assert sorted(set(rows.tolist())) == [0, 1, 2, 3, height - 3, height - 2, height - 1]
+    assert sorted(set(columns.tolist())) == [0, 1, 2, 3, width - 3, width - 2, width - 1]
+    assert not mask[..., 0, 0]
+
+
+def test_amplitude_scale_uses_max_outside_hole():
+    """归一化基准是参与损失的频点里的最大值，不再是被挖掉的直流。"""
+    source = make_disk()
+    amplitude = torch.abs(torch.fft.fft2(source)).detach()
+    mask = amplitude_mask(amplitude, DC_RADIUS)
+    # 直流远大于剩余频点，两者混用会把损失挤进 log1p 的近零段
+    assert amplitude[0, 0, 0, 0] > amplitude[mask].amax()
+    # 同一张图自比，逐点相等，损失严格为 0
+    assert normalized_log_amplitude_loss(source, amplitude, mask).item() == 0.0
+
+
+def test_amplitude_loss_gradient_flows():
+    """挖洞后梯度仍能经 FFT 回流到 prediction。"""
+    source = make_disk()
+    amplitude = torch.abs(torch.fft.fft2(source)).detach()
+    mask = amplitude_mask(amplitude, DC_RADIUS)
+    prediction = torch.rand_like(source).requires_grad_(True)
+    normalized_log_amplitude_loss(prediction, amplitude, mask).backward()
+    assert prediction.grad is not None
+    assert prediction.grad.norm().item() > 0.0
 
 
 def test_source_contour_is_binary():
