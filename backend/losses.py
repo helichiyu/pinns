@@ -13,9 +13,13 @@ def gaussian_blur(image, sigma):
     return F.conv2d(image, kernel, padding=radius)
 
 
-def amplitude_mask(target_amplitude, relative_floor):
-    mask = target_amplitude >= target_amplitude.amax() * relative_floor
-    mask = mask.clone()
+def amplitude_mask(target_amplitude):
+    """只排除直流点，其余频点（含高频）全部参与损失。
+
+    直流点等于全图像素总和，是整幅振幅谱里最大的一个数，留着它损失会几乎只在
+    调整图像总亮度。高频虽然幅值小、含噪，但决定重建的锐度，不排除。
+    """
+    mask = torch.ones_like(target_amplitude, dtype=torch.bool)
     mask[..., 0, 0] = False
     return mask
 

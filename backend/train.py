@@ -192,7 +192,7 @@ def main(args):
     contour_sigma = args.contour_sigma
     contour_threshold = args.contour_threshold
     target_amplitude = torch.abs(torch.fft.fft2(source)).detach()
-    valid_amplitude = amplitude_mask(target_amplitude, config.AMPLITUDE_FLOOR)
+    valid_amplitude = amplitude_mask(target_amplitude)
     source_mask = source_contour(source, contour_sigma, contour_threshold)
     contour_pixels = int(source_mask.sum().item())
     if contour_pixels == 0:
