@@ -78,7 +78,7 @@ D:\anaconda3\envs\use\python.exe backend\train.py --image images/567.png --share
 | `--cpu` | 关 | 强制 CPU |
 | `--log-every` | `config.LOG_EVERY` (20) | 日志间隔 |
 
-结果目录包含：`real_space.png`（原图 / 输出 / 叠加 / 误差）、`spectra.png`（振幅谱）、`support.png`（硬轮廓对比）、`convergence.png`（3×3 共 9 个指标面板）、`history.csv`、`metrics.csv`、`state.pt`。
+结果目录在训练结束、真要写文件时才创建（失败或被终止不会留下空目录），包含：`real_space.png`（原图 / 输出 / 叠加 / 误差）、`spectra.png`（振幅谱）、`support.png`（硬轮廓对比）、`convergence.png`（3×3 共 9 个指标面板）、`history.csv`、`metrics.csv`、`state.pt`。目录名的时间戳是训练开始时刻。
 
 ## Web 前端
 
@@ -93,7 +93,7 @@ D:\anaconda3\envs\use\python.exe backend\server.py
 - 顶部选择实验组数（1~6），每组一行参数设定：第一行图片（下拉列出 `images/` 里的文件），第二行画布扩大 + 训练轮数，第三行高斯半径 + 轮廓阈值，第四行直方图权重 + 背景权重。右上角「重置」按钮清除全部状态，方便重新配置。
 - 参数行右侧实时绘制两条曲线（总损失 + IoU），自动填充行高。
 - 卡片底部为结果按钮区，从左到右三个：「轮廓对比图」在训练前显示处理后的原图与二值化 mask 的对比（标题栏标注轮廓占比），训练完成后改为显示 `support.png`（源图轮廓 vs 输出轮廓）；「结果对比图」显示 `real_space.png`；「结果曲线图」显示 `convergence.png`。后两个在训练完成后激活。
-- 底部一整行终端输出，带「暂停」「终止」按钮。暂停通过 Windows NT API 挂起子进程，终止会 kill 当前实验并清空队列。
+- 底部一整行终端输出，带「结束当前」「终止」按钮。「结束当前」往训练子进程的 stdin 写一行 `stop`，训练在下一轮开头跳出循环、用已跑出的 history 正常出图存目录，然后队列自动进入下一组（状态显示「已提前结束」）；「终止」会 kill 当前实验并清空整个队列，不出图。
 - 点「开始运行」后实验按顺序执行，前一组跑完自动开始下一组。
 
 ## 主要参数

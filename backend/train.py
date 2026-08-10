@@ -3,6 +3,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -141,6 +142,21 @@ def emit_metric(stream, **kwargs):
         print(METRIC_PREFIX + json.dumps(kwargs), flush=True)
 
 
+# 前端「结束当前」会往 stdin 写一行 stop：训练在下一轮开头跳出循环，
+# 用已有 history 正常出图，不是 kill 进程。
+_stop_requested = threading.Event()
+
+
+def watch_stop_signal():
+    """后台线程读 stdin，收到 stop 就置位停止标志。"""
+    def loop():
+        for line in sys.stdin:
+            if line.strip() == "stop":
+                _stop_requested.set()
+                return
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified single-UNet phase retrieval")
     parser.add_argument("--image", default=config.IMAGE_PATH)
@@ -165,6 +181,8 @@ def parse_args():
 
 
 def main(args):
+    if args.stream_metrics:
+        watch_stop_signal()
     if args.seed is not None:
         random.seed(args.seed)
         np.random.seed(args.seed)
@@ -192,9 +210,10 @@ def main(args):
     # expand 是浮点，整数值去掉尾随 .0，让目录名保持 x1 / x2 而不是 x1.0 / x2.0
     expand_tag = "{:g}".format(args.expand)
     tag = "{}_x{}".format(os.path.splitext(os.path.basename(args.image))[0], expand_tag)
+    # 目录名此刻定下（时间戳＝开始时间），但等训练结束真要写文件时才创建，
+    # 避免失败或中途终止在 results/ 里留下空目录。
     output_dir = args.output or os.path.join(config.RESULTS_DIR,
                                              datetime.now().strftime("run_{}_%Y%m%d_%H%M%S".format(tag)))
-    os.makedirs(output_dir, exist_ok=True)
     history = {key: [] for key in HISTORY_KEYS}
 
     print("Device: {}; image: {}; expand: {}x; canvas: {}; iterations: {}".format(
@@ -202,7 +221,13 @@ def main(args):
     print("Source contour ratio: {:.2%} ({} px)".format(source_area_ratio, contour_pixels))
     start_time = time.time()
     prediction = None
+    stopped_early = False
     for iteration in range(1, args.iterations + 1):
+        # history 非空才允许提前结束，保证出图至少有一个数据点。
+        if _stop_requested.is_set() and history["iteration"]:
+            stopped_early = True
+            print("收到结束指令，在第 {} 轮停止，按已有结果出图。".format(iteration - 1))
+            break
         optimizer.zero_grad(set_to_none=True)
         prediction = model(current_input)
         amplitude = normalized_log_amplitude_loss(prediction, target_amplitude, valid_amplitude)
@@ -243,6 +268,7 @@ def main(args):
         final_prediction = prediction.detach()
         display_prediction = register_to_source(final_prediction, source)
         final_contour = topk_contour(display_prediction, contour_sigma, contour_pixels)
+    os.makedirs(output_dir, exist_ok=True)
     plot_real_space(source, display_prediction, padding, os.path.join(output_dir, "real_space.png"))
     plot_spectra(source, display_prediction, os.path.join(output_dir, "spectra.png"))
     plot_support(source_mask, final_contour, padding, os.path.join(output_dir, "support.png"))
@@ -253,7 +279,8 @@ def main(args):
                os.path.join(output_dir, "state.pt"))
     print("Results saved to: {}".format(output_dir))
     if args.stream_metrics:
-        print(RESULT_PREFIX + json.dumps({"output_dir": output_dir.replace("\\", "/")}), flush=True)
+        print(RESULT_PREFIX + json.dumps({"output_dir": output_dir.replace("\\", "/"),
+                                          "stopped_early": stopped_early}), flush=True)
 
 
 if __name__ == "__main__":

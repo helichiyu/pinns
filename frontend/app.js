@@ -396,7 +396,7 @@ function connectWS() {
       running = false;
       document.getElementById("start-btn").disabled = false;
       document.getElementById("start-btn").textContent = "开始运行";
-      document.getElementById("pause-btn").disabled = true;
+      document.getElementById("finish-btn").disabled = true;
       document.getElementById("stop-btn").disabled = true;
     }
     setTimeout(connectWS, 2000);
@@ -407,6 +407,7 @@ function handleMsg(msg) {
   const exp = experiments[msg.index];
   switch (msg.type) {
     case "exp_start":
+      document.getElementById("finish-btn").disabled = false;
       if (exp) {
         setStatus(exp, "运行中", "status-running");
         exp.lossChart.clear();
@@ -425,8 +426,9 @@ function handleMsg(msg) {
       }
       break;
     case "exp_done":
+      document.getElementById("finish-btn").disabled = true;
       if (exp) {
-        setStatus(exp, "已完成", "status-done");
+        setStatus(exp, msg.stopped_early ? "已提前结束" : "已完成", "status-done");
         if (msg.output_dir) {
           exp.outputDir = msg.output_dir;
           exp.realBtn.disabled = false;
@@ -435,33 +437,30 @@ function handleMsg(msg) {
       }
       break;
     case "exp_failed":
+      document.getElementById("finish-btn").disabled = true;
       if (exp) setStatus(exp, "失败", "status-failed");
       appendTerminal("实验 " + (msg.index + 1) + " 异常退出（代码 " + msg.code + "）", true);
       break;
     case "exp_stopped":
+      document.getElementById("finish-btn").disabled = true;
       if (exp) setStatus(exp, "已终止", "status-failed");
       break;
-    case "paused":
-      document.getElementById("pause-btn").textContent = "继续";
-      appendTerminal("── 实验已暂停 ──");
-      break;
-    case "resumed":
-      document.getElementById("pause-btn").textContent = "暂停";
-      appendTerminal("── 实验已恢复 ──");
+    case "finishing":
+      document.getElementById("finish-btn").disabled = true;
+      appendTerminal("── 已请求结束当前实验，正在出图 ──");
       break;
     case "all_done":
       running = false;
       document.getElementById("start-btn").disabled = false;
       document.getElementById("start-btn").textContent = "开始运行";
-      document.getElementById("pause-btn").disabled = true;
-      document.getElementById("pause-btn").textContent = "暂停";
+      document.getElementById("finish-btn").disabled = true;
       document.getElementById("stop-btn").disabled = true;
       appendTerminal("全部实验已结束。");
       break;
   }
 }
 
-// ---- Start / Pause / Stop ----
+// ---- Start / Finish current / Stop ----
 function startExperiments() {
   if (running || !ws || ws.readyState !== WebSocket.OPEN) return;
   experiments.forEach(exp => {
@@ -476,7 +475,6 @@ function startExperiments() {
   running = true;
   document.getElementById("start-btn").disabled = true;
   document.getElementById("start-btn").textContent = "运行中…";
-  document.getElementById("pause-btn").disabled = false;
   document.getElementById("stop-btn").disabled = false;
   document.getElementById("inc-btn").disabled = true;
   ws.send(JSON.stringify({
@@ -486,10 +484,10 @@ function startExperiments() {
   appendTerminal("正在启动 " + experiments.length + " 组实验…");
 }
 
-function togglePause() {
+// 结束当前这组：训练提前收尾并按已有结果出图，队列继续下一组。
+function finishCurrent() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const btn = document.getElementById("pause-btn");
-  ws.send(JSON.stringify({ type: btn.textContent === "暂停" ? "pause" : "resume" }));
+  ws.send(JSON.stringify({ type: "finish_current" }));
 }
 
 function stopExperiments() {
@@ -527,7 +525,7 @@ async function init() {
     if (!running) setExpCount(experiments.length - 1);
   });
   document.getElementById("start-btn").addEventListener("click", startExperiments);
-  document.getElementById("pause-btn").addEventListener("click", togglePause);
+  document.getElementById("finish-btn").addEventListener("click", finishCurrent);
   document.getElementById("stop-btn").addEventListener("click", stopExperiments);
   document.getElementById("reset-btn").addEventListener("click", resetAll);
   document.getElementById("preview-close").addEventListener("click", () => {

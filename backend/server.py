@@ -5,7 +5,6 @@ Then open http://localhost:8770 in a browser.
 """
 
 import base64
-import ctypes
 import io
 import json
 import os
@@ -34,42 +33,6 @@ IMAGES = os.path.join(ROOT, "images")
 PORT = 8770
 
 IMAGE_RE = re.compile(r"\.(png|jpg|jpeg|bmp|tif|tiff)$", re.IGNORECASE)
-
-# ---- Windows NT API for process suspend/resume ----
-# Must set argtypes/restype explicitly: HANDLE is pointer-sized on 64-bit.
-# Without this, ctypes defaults to c_int (32-bit) and truncates the handle,
-# causing NtSuspendProcess to receive an invalid handle and silently no-op.
-_k32 = ctypes.windll.kernel32
-_k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
-_k32.OpenProcess.restype = ctypes.c_void_p
-_k32.CloseHandle.argtypes = [ctypes.c_void_p]
-_k32.CloseHandle.restype = ctypes.c_bool
-
-_ntdll = ctypes.windll.ntdll
-_ntdll.NtSuspendProcess.argtypes = [ctypes.c_void_p]
-_ntdll.NtSuspendProcess.restype = ctypes.c_int32
-_ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
-_ntdll.NtResumeProcess.restype = ctypes.c_int32
-
-_PROCESS_SUSPEND_RESUME = 0x0800
-
-
-def _suspend_process(pid):
-    handle = _k32.OpenProcess(_PROCESS_SUSPEND_RESUME, False, pid)
-    if handle:
-        _ntdll.NtSuspendProcess(handle)
-        _k32.CloseHandle(handle)
-        return True
-    return False
-
-
-def _resume_process(pid):
-    handle = _k32.OpenProcess(_PROCESS_SUSPEND_RESUME, False, pid)
-    if handle:
-        _ntdll.NtResumeProcess(handle)
-        _k32.CloseHandle(handle)
-        return True
-    return False
 
 
 class MainHandler(tornado.web.RequestHandler):
@@ -110,7 +73,6 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
     def open(self):
         self.loop = tornado.ioloop.IOLoop.current()
         self.proc = None
-        self.paused = False
         self.stopped = False
         self.remaining = []
         ExperimentSocket._connections += 1
@@ -120,29 +82,29 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
         t = msg.get("type")
         if t == "start":
             self.stopped = False
-            self.paused = False
             self.remaining = list(enumerate(msg["experiments"]))
             self._next()
-        elif t == "pause":
-            if self.proc and not self.paused:
-                if _suspend_process(self.proc.pid):
-                    self.paused = True
-                    self._send({"type": "paused"})
-        elif t == "resume":
-            if self.proc and self.paused:
-                if _resume_process(self.proc.pid):
-                    self.paused = False
-                    self._send({"type": "resumed"})
+        elif t == "finish_current":
+            self._finish_current()
         elif t == "stop":
             self._stop()
+
+    def _finish_current(self):
+        """结束当前这组实验：让 train.py 提前收尾出图，之后队列继续下一组。"""
+        proc = self.proc
+        if not proc or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.write("stop\n")
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            return
+        self._send({"type": "finishing"})
 
     def _stop(self):
         self.stopped = True
         self.remaining = []
         if self.proc:
-            if self.paused:
-                _resume_process(self.proc.pid)
-                self.paused = False
             self.proc.kill()
 
     def _next(self):
@@ -164,10 +126,16 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
         cmd += ["--share-background", str(exp["share_background"])]
         cmd += ["--iterations", str(exp["iterations"])]
         cmd += ["--stream-metrics"]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        # 子进程默认按系统区域编码（GBK）写 stdout，这里按 utf-8 读，
+        # 所以必须强制子进程也用 utf-8，否则中文日志会解码失败。
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        # stdin 用来发「结束当前」指令，让训练提前收尾而不是被 kill。
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, env=env,
                                 cwd=ROOT, text=True, encoding="utf-8", bufsize=1)
         self.proc = proc
         output_dir = None
+        stopped_early = False
         for line in proc.stdout:
             line = line.rstrip("\n")
             if line.startswith(METRIC_PREFIX):
@@ -180,7 +148,9 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
                     pass
             elif line.startswith(RESULT_PREFIX):
                 try:
-                    output_dir = json.loads(line[len(RESULT_PREFIX):])["output_dir"]
+                    payload = json.loads(line[len(RESULT_PREFIX):])
+                    output_dir = payload["output_dir"]
+                    stopped_early = payload.get("stopped_early", False)
                 except (json.JSONDecodeError, KeyError):
                     pass
             else:
@@ -191,8 +161,8 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
             result = {"type": "exp_stopped", "index": index}
         else:
             status = "exp_done" if proc.returncode == 0 else "exp_failed"
-            result = {"type": status, "index": index,
-                      "code": proc.returncode, "output_dir": output_dir}
+            result = {"type": status, "index": index, "code": proc.returncode,
+                      "output_dir": output_dir, "stopped_early": stopped_early}
         loop.add_callback(self._on_finished, result)
 
     def _send(self, msg):
