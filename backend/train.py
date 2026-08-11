@@ -269,8 +269,11 @@ def main(args):
                 # 本块在 optimizer.step() 之后，所以 s_i 比 total 领先一个 Adam 步
                 # （差约 1e-4，不影响分析）。每轮同步 s 到 CPU 会拖慢训练，不值得。
                 log_variance = weights.log_variance.tolist()
-                # 前端实时曲线用加权损失：total 含 +s_i、会变负，读不出损失是否在降。
-                weighted = weights.contributions(amplitude, histogram, background).sum().item()
+                # 前端实时曲线用归一化损失 L̂_i = L_i / L_i,0：三条线同起点 1.0，往下即在降。
+                # 不能用 total（含 +s_i、随 s 线性滑向 -∞）也不能用加权和
+                # （不动点被钉在 Σw_i 附近，测的是 s 的错配而非损失水平）。
+                normalized = (torch.stack([amplitude, histogram, background])
+                              / weights.initial).tolist()
                 values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(),
                           psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
                           pearson_cc(evaluation_prediction, source), amp_cc,
@@ -287,7 +290,7 @@ def main(args):
                       iteration, args.iterations, *values[1:5],
                       ssim_value, iou,
                       format_duration(elapsed), format_duration(eta)))
-            emit_metric(args.stream_metrics, iteration=iteration, total=weighted,
+            emit_metric(args.stream_metrics, iteration=iteration, losses=normalized,
                         iou=iou, ssim=ssim_value)
 
     with torch.no_grad():

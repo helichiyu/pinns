@@ -9,12 +9,13 @@ const MAX_EXPERIMENTS = 6;
 
 // ---- Chart: dependency-free canvas line chart ----
 class MiniChart {
-  constructor(canvas, label, color) {
+  // series: [{label, color}]；options.logScale 为真时 y 轴走 log10。
+  constructor(canvas, series, options) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
-    this.label = label;
-    this.color = color;
-    this.points = [];
+    this.series = series;
+    this.logScale = !!(options && options.logScale);
+    this.points = [];   // [[x, [y, ...]], ...]，内层长度与 series 一致
     this.resize();
   }
 
@@ -29,8 +30,9 @@ class MiniChart {
     this.draw();
   }
 
-  push(x, y) {
-    this.points.push([x, y]);
+  // ys 为数组，长度须与 series 一致；单序列也传数组。
+  push(x, ys) {
+    this.points.push([x, ys]);
     this.draw();
   }
 
@@ -40,8 +42,15 @@ class MiniChart {
   }
 
   fmt(v) {
+    if (this.logScale) return Math.pow(10, v).toExponential(0);
     if (v !== 0 && Math.abs(v) < 0.01) return v.toExponential(0);
     return v.toFixed(3);
+  }
+
+  // 对数轴下返回 log10(y)，非正值返回 null 表示该点不可画。
+  mapY(y) {
+    if (!this.logScale) return y;
+    return y > 0 ? Math.log10(y) : null;
   }
 
   draw() {
@@ -49,11 +58,19 @@ class MiniChart {
     const pad = { l: 38, r: 8, t: 24, b: 18 };
     ctx.clearRect(0, 0, w, h);
 
-    ctx.fillStyle = "#1d1d1f";
-    ctx.font = "600 11px var(--font), system-ui";
+    // 图例：色点 + 名称，横排
     ctx.font = "600 11px system-ui";
     ctx.textAlign = "left";
-    ctx.fillText(this.label, 4, 12);
+    let legendX = 4;
+    for (const s of this.series) {
+      ctx.fillStyle = s.color;
+      ctx.beginPath();
+      ctx.arc(legendX + 3, 8, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1d1d1f";
+      ctx.fillText(s.label, legendX + 10, 12);
+      legendX += 10 + ctx.measureText(s.label).width + 10;
+    }
 
     if (this.points.length < 2) {
       ctx.fillStyle = "#aeaeb2";
@@ -63,9 +80,17 @@ class MiniChart {
       return;
     }
 
-    const xs = this.points.map(p => p[0]);
-    const ys = this.points.map(p => p[1]);
-    const xMin = xs[0], xMax = xs[xs.length - 1];
+    const xMin = this.points[0][0];
+    const xMax = this.points[this.points.length - 1][0];
+    // 全序列一起定 y 范围；对数轴下非正值不参与（也不会被画出来）。
+    const ys = [];
+    for (const [, values] of this.points) {
+      for (const value of values) {
+        const mapped = this.mapY(value);
+        if (mapped !== null) ys.push(mapped);
+      }
+    }
+    if (ys.length === 0) return;
     let yMin = Math.min(...ys), yMax = Math.max(...ys);
     if (yMax - yMin < 1e-15) yMax = yMin + 1;
 
@@ -98,17 +123,26 @@ class MiniChart {
     ctx.textAlign = "right";
     ctx.fillText(String(xMax), w - pad.r, h - 4);
 
-    // Line
-    ctx.strokeStyle = this.color;
+    // Lines：每个序列一条。对数轴下非正值断线，下一个可画点重新起笔。
     ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    for (let i = 0; i < this.points.length; i++) {
-      const px = pad.l + (this.points[i][0] - xMin) / (xMax - xMin || 1) * pw;
-      const py = pad.t + (1 - (this.points[i][1] - yMin) / (yMax - yMin)) * ph;
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
+    for (let s = 0; s < this.series.length; s++) {
+      ctx.strokeStyle = this.series[s].color;
+      ctx.beginPath();
+      let started = false;
+      for (const [x, values] of this.points) {
+        const mapped = this.mapY(values[s]);
+        if (mapped === null) {
+          started = false;
+          continue;
+        }
+        const px = pad.l + (x - xMin) / (xMax - xMin || 1) * pw;
+        const py = pad.t + (1 - (mapped - yMin) / (yMax - yMin)) * ph;
+        if (started) ctx.lineTo(px, py);
+        else ctx.moveTo(px, py);
+        started = true;
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
   }
 }
 
@@ -296,8 +330,13 @@ function createRow(index) {
   root.append(main, btnRow);
   document.getElementById("experiments").appendChild(root);
 
-  const lossChart = new MiniChart(lossCanvas, "总损失", "#0066cc");
-  const iouChart = new MiniChart(iouCanvas, "IoU", "#34c759");
+  // 三条归一化损失 L̂_i = L_i / L_i,0：同起点 1.0，对数轴，往下即在降。
+  const lossChart = new MiniChart(lossCanvas, [
+    { label: "振幅", color: "#0066cc" },
+    { label: "直方图", color: "#ff9500" },
+    { label: "背景", color: "#af52de" },
+  ], { logScale: true });
+  const iouChart = new MiniChart(iouCanvas, [{ label: "IoU", color: "#34c759" }]);
 
   return {
     rootEl: root,
@@ -421,8 +460,8 @@ function handleMsg(msg) {
       break;
     case "metric":
       if (exp) {
-        exp.lossChart.push(msg.iteration, msg.total);
-        exp.iouChart.push(msg.iteration, msg.iou);
+        exp.lossChart.push(msg.iteration, msg.losses);
+        exp.iouChart.push(msg.iteration, [msg.iou]);
       }
       break;
     case "exp_done":
