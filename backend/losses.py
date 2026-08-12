@@ -101,6 +101,11 @@ def background_loss(prediction, contour):
     return torch.mean(((1.0 - contour) * prediction).square())
 
 
+def input_output_loss(prediction, model_input):
+    """Penalize changes between one iteration's input and output."""
+    return F.mse_loss(prediction, model_input)
+
+
 class UncertaintyWeights(nn.Module):
     """Kendall 同方差不确定性加权，外层再乘固定的目标贡献比。
 
@@ -128,29 +133,31 @@ class UncertaintyWeights(nn.Module):
     （m/√v 归一化）。所以第一轮的网络更新与固定权重方案一致，差异纯粹来自 s 可学。
     """
 
-    def __init__(self, share_histogram, share_background):
+    def __init__(self, share_histogram, share_background, share_input_output=0.0):
         super().__init__()
-        # 顺序统一为：振幅、直方图、背景
-        self.log_variance = nn.Parameter(torch.zeros(3))
-        self.register_buffer("shares", torch.tensor([1.0, share_histogram, share_background]))
-        self.register_buffer("initial", torch.ones(3))
+        # Keep this order consistent across training, history, and frontend metrics.
+        self.log_variance = nn.Parameter(torch.zeros(4))
+        self.register_buffer("shares", torch.tensor(
+            [1.0, share_histogram, share_background, share_input_output]))
+        self.register_buffer("initial", torch.ones(4))
 
     @torch.no_grad()
-    def initialize(self, amplitude, histogram, background):
-        """记录首轮三项损失作为归一化基准 L_i,0。"""
-        losses = torch.stack([loss.detach() for loss in (amplitude, histogram, background)])
+    def initialize(self, amplitude, histogram, background, input_output):
+        """Record first-step losses as normalization baselines."""
+        losses = torch.stack([loss.detach() for loss in
+                              (amplitude, histogram, background, input_output)])
         self.initial.copy_(losses.clamp_min(1e-12))
 
-    def total(self, amplitude, histogram, background):
+    def total(self, amplitude, histogram, background, input_output):
         """被最小化的目标。含 +s_i 正则项，s_i 变负时会小于 0。"""
-        contributions = self.contributions(amplitude, histogram, background)
+        contributions = self.contributions(amplitude, histogram, background, input_output)
         return (contributions + self.shares * self.log_variance).sum()
 
-    def contributions(self, amplitude, histogram, background):
+    def contributions(self, amplitude, histogram, background, input_output):
         """三项的实际加权贡献 w_i·exp(-s_i)·L̂_i，收敛目标是 w_i 本身。
 
         它们的和是"加权损失"：不含 +s_i，所以只反映损失下降、不反映 s 走了多远，
         量级也与固定权重方案的 total 可比。total 变小可能只是 s 在适配。
         """
-        normalized = torch.stack([amplitude, histogram, background]) / self.initial
+        normalized = torch.stack([amplitude, histogram, background, input_output]) / self.initial
         return self.shares * torch.exp(-self.log_variance) * normalized

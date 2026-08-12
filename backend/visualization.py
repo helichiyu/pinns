@@ -86,13 +86,13 @@ def plot_source_contour_explanation(source, contour, padding, ratio, save_path):
 
 def plot_convergence(history, save_path):
     panels = (("total", "总损失"), ("amplitude", "振幅损失"), ("histogram", "轮廓内直方图损失"),
-              ("background", "背景损失"),
+              ("background", "背景损失"), ("input_output", "输入输出 MSE 损失"),
               ("psnr", "PSNR (dB)"), ("ssim", "SSIM"), ("pearson_cc", "Pearson CC"),
               ("amp_cc", "振幅域 CC"), ("support_iou", "粗轮廓 IoU"))
     ncols = 3
     nrows = (len(panels) + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.6, nrows * 4))
-    log_keys = ("amplitude", "histogram", "background")
+    log_keys = ("amplitude", "histogram", "background", "input_output")
     # total 含振幅项，量级约 1e-4，需要科学计数法的线性轴。
     small_linear_keys = ("total",)
     for axis, (key, title) in zip(axes.flat, panels):

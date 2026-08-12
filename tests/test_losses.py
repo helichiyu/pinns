@@ -1,6 +1,6 @@
 import torch
 
-from losses import (UncertaintyWeights, amplitude_mask, background_loss,
+from losses import (UncertaintyWeights, amplitude_mask, background_loss, input_output_loss,
                     masked_histogram_quantile_loss, normalized_log_amplitude_loss,
                     quantile_ranks, source_contour, topk_contour)
 
@@ -168,19 +168,31 @@ def test_background_loss_zero_outside_contour():
     assert background_loss(dirty, contour).item() > 0.0
 
 
-SHARES = (1.0, 0.5, 0.10)
-FIRST = (torch.tensor(2e-4), torch.tensor(3e-2), torch.tensor(7e-3))
+def test_input_output_loss_is_mse_and_has_gradient():
+    """The consistency term is zero for identical tensors and differentiable otherwise."""
+    model_input = torch.zeros(1, 1, 4, 4)
+    prediction = torch.full_like(model_input, 0.5, requires_grad=True)
+    loss = input_output_loss(prediction, model_input)
+    assert loss.item() == 0.25
+    loss.backward()
+    assert prediction.grad is not None
+    assert prediction.grad.norm().item() > 0.0
+    assert input_output_loss(model_input, model_input).item() == 0.0
+
+
+SHARES = (1.0, 0.5, 0.10, 0.10)
+FIRST = (torch.tensor(2e-4), torch.tensor(3e-2), torch.tensor(7e-3), torch.tensor(4e-3))
 
 
 def make_weights():
     """建好 UncertaintyWeights 并用首轮损失完成归一化基准记录。"""
-    weights = UncertaintyWeights(SHARES[1], SHARES[2])
+    weights = UncertaintyWeights(SHARES[1], SHARES[2], SHARES[3])
     weights.initialize(*FIRST)
     return weights
 
 
 def test_initial_contributions_match_shares():
-    """s_i 初值为 0、L̂_i,0 = 1，所以首轮三项贡献恰好等于 w_i。"""
+    """s_i 初值为 0、L̂_i,0 = 1，所以首轮四项贡献恰好等于 w_i。"""
     weights = make_weights()
     contributions = weights.contributions(*FIRST)
     assert torch.allclose(contributions, torch.tensor(SHARES), rtol=1e-5)
@@ -188,14 +200,22 @@ def test_initial_contributions_match_shares():
     assert torch.allclose(weights.total(*FIRST), torch.tensor(sum(SHARES)), rtol=1e-5)
 
 
+def test_zero_input_output_share_excludes_consistency_loss():
+    """A disabled consistency term must not affect the training objective."""
+    weights = UncertaintyWeights(SHARES[1], SHARES[2], 0.0)
+    weights.initialize(*FIRST)
+    changed_input_output = (*FIRST[:3], FIRST[3] * 100)
+    assert torch.allclose(weights.total(*FIRST), weights.total(*changed_input_output))
+
+
 def test_contributions_converge_to_shares_at_fixed_point():
-    """不动点 exp(-s_i) = 1/L̂_i 处，三项贡献仍等于 w_i——与损失降了多少无关。
+    """不动点 exp(-s_i) = 1/L̂_i 处，四项贡献仍等于 w_i——与损失降了多少无关。
 
     这是 w_i 乘在方括号外的关键性质：w_i 若乘进括号内，贡献会收敛到 w_i·L_i,0，
     辅助项被压掉几千倍。
     """
     weights = make_weights()
-    drop = torch.tensor([285.9, 82.0, 41.6])          # 各项损失下降倍数（实测量级）
+    drop = torch.tensor([285.9, 82.0, 41.6, 12.0])    # 各项损失下降倍数（实测量级）
     later = [first / factor for first, factor in zip(FIRST, drop)]
     with torch.no_grad():
         weights.log_variance.copy_(torch.log(1.0 / drop))   # s_i = log(L̂_i)
@@ -213,11 +233,11 @@ def test_log_variance_gradient_vanishes_at_first_step():
     assert weights.log_variance.requires_grad
     weights.total(*FIRST).backward()
     assert weights.log_variance.grad is not None
-    assert torch.allclose(weights.log_variance.grad, torch.zeros(3), atol=1e-7)
+    assert torch.allclose(weights.log_variance.grad, torch.zeros(4), atol=1e-7)
 
 
 def test_log_variance_receives_gradient_once_losses_drop():
-    """损失下降后 L̂_i < 1，三个 s_i 都收到正梯度（推 s 往负走、放大权重）。"""
+    """损失下降后 L̂_i < 1，四个 s_i 都收到正梯度（推 s 往负走、放大权重）。"""
     weights = make_weights()
     later = [loss / 10.0 for loss in FIRST]
     weights.total(*later).backward()
@@ -229,7 +249,7 @@ def test_log_variance_receives_gradient_once_losses_drop():
 def test_total_goes_negative_at_fixed_point_but_weighted_stays_positive():
     """不动点处 total 因 +s_i 而为负，加权损失仍为正——两者读数含义不同。"""
     weights = make_weights()
-    drop = torch.tensor([285.9, 82.0, 41.6])
+    drop = torch.tensor([285.9, 82.0, 41.6, 12.0])
     later = [loss / factor for loss, factor in zip(FIRST, drop)]
     with torch.no_grad():
         weights.log_variance.copy_(torch.log(1.0 / drop))

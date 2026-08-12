@@ -277,7 +277,28 @@ function createRow(index) {
 
   fieldsRow4.append(shareHistWrap, shareBgWrap);
 
-  params.append(top, fieldsRow1, fieldsRow2, fieldsRow3, fieldsRow4);
+  // 第 5 行：输入输出一致性损失开关 + 权重
+  const fieldsRow5 = document.createElement("div");
+  fieldsRow5.className = "fields-row";
+
+  const inputOutputEnableWrap = document.createElement("label");
+  inputOutputEnableWrap.className = "field checkbox-field";
+  const inputOutputEnable = document.createElement("input");
+  inputOutputEnable.type = "checkbox";
+  inputOutputEnable.checked = false;
+  inputOutputEnableWrap.append(inputOutputEnable, document.createTextNode("启用输入输出 MSE"));
+
+  const inputOutputShareWrap = document.createElement("div");
+  inputOutputShareWrap.className = "field";
+  inputOutputShareWrap.innerHTML = '<span class="field-label">Input-output MSE weight</span>';
+  const inputOutputShareInput = document.createElement("input");
+  inputOutputShareInput.type = "text";
+  inputOutputShareInput.value = "0.10";
+  inputOutputShareWrap.appendChild(inputOutputShareInput);
+
+  fieldsRow5.append(inputOutputEnableWrap, inputOutputShareWrap);
+
+  params.append(top, fieldsRow1, fieldsRow2, fieldsRow3, fieldsRow4, fieldsRow5);
 
   // Charts
   const charts = document.createElement("div");
@@ -330,18 +351,19 @@ function createRow(index) {
   root.append(main, btnRow);
   document.getElementById("experiments").appendChild(root);
 
-  // 三条归一化损失 L̂_i = L_i / L_i,0：同起点 1.0，对数轴，往下即在降。
+  // Four normalized losses L̂_i = L_i / L_i,0 start at 1.0.
   const lossChart = new MiniChart(lossCanvas, [
     { label: "振幅", color: "#0066cc" },
     { label: "直方图", color: "#ff9500" },
     { label: "背景", color: "#af52de" },
+    { label: "Input-output MSE", color: "#ff3b30" },
   ], { logScale: true });
   const iouChart = new MiniChart(iouCanvas, [{ label: "IoU", color: "#34c759" }]);
 
   return {
     rootEl: root,
     imgSel, expInput, iterInput, sigmaInput, threshInput,
-    shareHistInput, shareBgInput,
+    shareHistInput, shareBgInput, inputOutputEnable, inputOutputShareInput,
     statusEl: status,
     previewBtn, realBtn, curveBtn,
     lossChart, iouChart,
@@ -363,6 +385,8 @@ function getConfig(exp) {
     contour_threshold: parseFloat(exp.threshInput.value) || 0.2,
     share_histogram: parseFloat(exp.shareHistInput.value) || 0.5,
     share_background: parseFloat(exp.shareBgInput.value) || 0.1,
+    enable_input_output_loss: exp.inputOutputEnable.checked,
+    share_input_output: parseFloat(exp.inputOutputShareInput.value) || 0.1,
   };
 }
 

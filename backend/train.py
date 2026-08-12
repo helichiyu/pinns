@@ -14,7 +14,7 @@ from PIL import Image
 
 import config
 from losses import (UncertaintyWeights, amplitude_mask, background_loss,
-                    masked_histogram_quantile_loss, normalized_log_amplitude_loss,
+                    input_output_loss, masked_histogram_quantile_loss, normalized_log_amplitude_loss,
                     quantile_ranks, source_contour, topk_contour)
 from model import UNet
 from visualization import (plot_convergence, plot_real_space, plot_spectra,
@@ -25,10 +25,10 @@ from visualization import (plot_convergence, plot_real_space, plot_spectra,
 METRIC_PREFIX = "__METRIC__"
 RESULT_PREFIX = "__RESULT__"
 
-# 末三列是 Kendall 可学习权重的对数方差 s_i，只入 CSV，不进收敛图。
-HISTORY_KEYS = ("iteration", "total", "amplitude", "histogram", "background",
+# The final four columns are Kendall log variances, stored in CSV only.
+HISTORY_KEYS = ("iteration", "total", "amplitude", "histogram", "background", "input_output",
                 "psnr", "ssim", "pearson_cc", "amp_cc", "support_iou",
-                "s_amplitude", "s_histogram", "s_background")
+                "s_amplitude", "s_histogram", "s_background", "s_input_output")
 
 
 def format_duration(seconds):
@@ -188,6 +188,11 @@ def parse_args():
                         help="轮廓内直方图项初始贡献占振幅项的比例")
     parser.add_argument("--share-background", type=float, default=config.SHARE_BACKGROUND,
                         help="背景项初始贡献占振幅项的比例")
+    parser.add_argument("--enable-input-output-loss", action="store_true",
+                        default=config.ENABLE_INPUT_OUTPUT_LOSS,
+                        help="include the input-output MSE loss in the training objective")
+    parser.add_argument("--share-input-output", type=float, default=config.SHARE_INPUT_OUTPUT,
+                        help="input-output MSE target contribution relative to amplitude")
     parser.add_argument("--iterations", type=int, default=config.ITERATIONS)
     parser.add_argument("--output", default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -222,7 +227,9 @@ def main(args):
     ranks = quantile_ranks(contour_pixels, config.HISTOGRAM_BINS, device)
     target_quantiles = source[source_mask > 0.5].sort().values[ranks].detach()
     model = UNet(config.BASE_CHANNELS).to(device)
-    weights = UncertaintyWeights(args.share_histogram, args.share_background).to(device)
+    input_output_share = args.share_input_output if args.enable_input_output_loss else 0.0
+    weights = UncertaintyWeights(args.share_histogram, args.share_background,
+                                 input_output_share).to(device)
     # s_i 与网络参数进同一个 Adam、同一个学习率（Kendall 原文做法）。
     optimizer = torch.optim.Adam(list(model.parameters()) + list(weights.parameters()),
                                  lr=config.LEARNING_RATE)
@@ -254,9 +261,11 @@ def main(args):
         contour = topk_contour(prediction, contour_sigma, contour_pixels)
         histogram = masked_histogram_quantile_loss(prediction, contour, target_quantiles, ranks)
         background = background_loss(prediction, contour)
+        input_output = (input_output_loss(prediction, current_input)
+                        if args.enable_input_output_loss else prediction.new_zeros(()))
         if iteration == 1:
-            weights.initialize(amplitude, histogram, background)
-        total = weights.total(amplitude, histogram, background)
+            weights.initialize(amplitude, histogram, background, input_output)
+        total = weights.total(amplitude, histogram, background, input_output)
         total.backward()
         optimizer.step()
         current_input = prediction.detach()
@@ -269,12 +278,13 @@ def main(args):
                 # 本块在 optimizer.step() 之后，所以 s_i 比 total 领先一个 Adam 步
                 # （差约 1e-4，不影响分析）。每轮同步 s 到 CPU 会拖慢训练，不值得。
                 log_variance = weights.log_variance.tolist()
-                # 前端实时曲线用归一化损失 L̂_i = L_i / L_i,0：三条线同起点 1.0，往下即在降。
+                # The normalized losses start at 1.0, and decreasing values indicate progress.
                 # 不能用 total（含 +s_i、随 s 线性滑向 -∞）也不能用加权和
                 # （不动点被钉在 Σw_i 附近，测的是 s 的错配而非损失水平）。
-                normalized = (torch.stack([amplitude, histogram, background])
+                normalized = (torch.stack([amplitude, histogram, background, input_output])
                               / weights.initial).tolist()
                 values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(),
+                          input_output.item(),
                           psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
                           pearson_cc(evaluation_prediction, source), amp_cc,
                           support_iou(evaluation_contour, source_mask),
@@ -283,11 +293,11 @@ def main(args):
                 history[key].append(value)
             elapsed = time.time() - start_time
             eta = elapsed / iteration * (args.iterations - iteration)
-            ssim_value = values[6]
-            iou = values[9]
-            print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} "
+            ssim_value = values[7]
+            iou = values[10]
+            print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} input_output={:.3e} "
                   "ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
-                      iteration, args.iterations, *values[1:5],
+                      iteration, args.iterations, *values[1:6],
                       ssim_value, iou,
                       format_duration(elapsed), format_duration(eta)))
             emit_metric(args.stream_metrics, iteration=iteration, losses=normalized,

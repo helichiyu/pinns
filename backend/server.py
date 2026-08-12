@@ -124,6 +124,9 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
         cmd += ["--contour-threshold", str(exp["contour_threshold"])]
         cmd += ["--share-histogram", str(exp["share_histogram"])]
         cmd += ["--share-background", str(exp["share_background"])]
+        cmd += ["--share-input-output", str(exp["share_input_output"])]
+        if exp["enable_input_output_loss"]:
+            cmd += ["--enable-input-output-loss"]
         cmd += ["--iterations", str(exp["iterations"])]
         cmd += ["--stream-metrics"]
         # 子进程默认按系统区域编码（GBK）写 stdout，这里按 utf-8 读，
