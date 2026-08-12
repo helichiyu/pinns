@@ -290,7 +290,7 @@ function createRow(index) {
 
   const inputOutputShareWrap = document.createElement("div");
   inputOutputShareWrap.className = "field";
-  inputOutputShareWrap.innerHTML = '<span class="field-label">Input-output MSE weight</span>';
+  inputOutputShareWrap.innerHTML = '<span class="field-label">输入输出 MSE 权重</span>';
   const inputOutputShareInput = document.createElement("input");
   inputOutputShareInput.type = "text";
   inputOutputShareInput.value = "0.10";
@@ -356,7 +356,7 @@ function createRow(index) {
     { label: "振幅", color: "#0066cc" },
     { label: "直方图", color: "#ff9500" },
     { label: "背景", color: "#af52de" },
-    { label: "Input-output MSE", color: "#ff3b30" },
+    { label: "输入输出 MSE", color: "#ff3b30" },
   ], { logScale: true });
   const iouChart = new MiniChart(iouCanvas, [{ label: "IoU", color: "#34c759" }]);
 
