@@ -1,0 +1,5 @@
+﻿指标,末轮值
+ssim,1.0
+pearson_cc,1.0
+amp_cc,1.0
+support_iou,1.0

@@ -27,7 +27,7 @@ RESULT_PREFIX = "__RESULT__"
 
 # The final four columns are Kendall log variances, stored in CSV only.
 HISTORY_KEYS = ("iteration", "total", "amplitude", "histogram", "background", "input_output",
-                "psnr", "ssim", "pearson_cc", "amp_cc", "support_iou",
+                "ssim", "pearson_cc", "amp_cc", "support_iou",
                 "s_amplitude", "s_histogram", "s_background", "s_input_output")
 
 
@@ -94,10 +94,6 @@ def patterson_initialization(target_amplitude, valid_amplitude):
     patterson = torch.fft.fftshift(torch.real(torch.fft.ifft2(intensity)), dim=(-2, -1))
     low, high = patterson.amin(), patterson.amax()
     return (patterson - low) / (high - low).clamp_min(1e-12)
-
-
-def psnr(prediction, source):
-    return (-10.0 * torch.log10(F.mse_loss(prediction, source) + 1e-12)).item()
 
 
 def ssim(prediction, source):
@@ -285,7 +281,7 @@ def main(args):
                               / weights.initial).tolist()
                 values = (iteration, total.item(), amplitude.item(), histogram.item(), background.item(),
                           input_output.item(),
-                          psnr(evaluation_prediction, source), ssim(evaluation_prediction, source),
+                          ssim(evaluation_prediction, source),
                           pearson_cc(evaluation_prediction, source), amp_cc,
                           support_iou(evaluation_contour, source_mask),
                           *log_variance)
@@ -293,8 +289,8 @@ def main(args):
                 history[key].append(value)
             elapsed = time.time() - start_time
             eta = elapsed / iteration * (args.iterations - iteration)
-            ssim_value = values[7]
-            iou = values[10]
+            ssim_value = values[6]
+            iou = values[9]
             print("[{}/{}] total={:.3e} amp={:.3e} hist={:.3e} bg={:.3e} input_output={:.3e} "
                   "ssim={:.3f} iou={:.3f} elapsed={} eta={}".format(
                       iteration, args.iterations, *values[1:6],
