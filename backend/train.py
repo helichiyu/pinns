@@ -189,6 +189,9 @@ def parse_args():
                         help="include the input-output MSE loss in the training objective")
     parser.add_argument("--share-input-output", type=float, default=config.SHARE_INPUT_OUTPUT,
                         help="input-output MSE target contribution relative to amplitude")
+    parser.add_argument("--enable-source-contour", action="store_true",
+                        default=config.ENABLE_SOURCE_CONTOUR,
+                        help="训练中直方图/背景两项 loss 直接使用源图轮廓，而不是网络当轮输出算出的轮廓")
     parser.add_argument("--iterations", type=int, default=config.ITERATIONS)
     parser.add_argument("--output", default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -254,7 +257,8 @@ def main(args):
         optimizer.zero_grad(set_to_none=True)
         prediction = model(current_input)
         amplitude = normalized_log_amplitude_loss(prediction, target_amplitude, valid_amplitude)
-        contour = topk_contour(prediction, contour_sigma, contour_pixels)
+        contour = (source_mask if args.enable_source_contour
+                  else topk_contour(prediction, contour_sigma, contour_pixels))
         histogram = masked_histogram_quantile_loss(prediction, contour, target_quantiles, ranks)
         background = background_loss(prediction, contour)
         input_output = (input_output_loss(prediction, current_input)

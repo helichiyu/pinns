@@ -173,18 +173,6 @@ main {
   font-weight: 500;
 }
 
-.checkbox-field {
-  align-items: flex-start;
-  justify-content: center;
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.checkbox-field input {
-  margin: 0 0 3px;
-}
-
 select, input[type="text"] {
   font-family: var(--font);
   font-size: 14px;

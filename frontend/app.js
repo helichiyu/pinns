@@ -277,28 +277,43 @@ function createRow(index) {
 
   fieldsRow4.append(shareHistWrap, shareBgWrap);
 
-  // 第 5 行：输入输出一致性损失开关 + 权重
+  // 第 5 行：一致性权重
   const fieldsRow5 = document.createElement("div");
   fieldsRow5.className = "fields-row";
 
-  const inputOutputEnableWrap = document.createElement("label");
-  inputOutputEnableWrap.className = "field checkbox-field";
-  const inputOutputEnable = document.createElement("input");
-  inputOutputEnable.type = "checkbox";
-  inputOutputEnable.checked = false;
-  inputOutputEnableWrap.append(inputOutputEnable, document.createTextNode("启用输入输出 MSE"));
-
   const inputOutputShareWrap = document.createElement("div");
   inputOutputShareWrap.className = "field";
-  inputOutputShareWrap.innerHTML = '<span class="field-label">输入输出 MSE 权重</span>';
+  inputOutputShareWrap.innerHTML = '<span class="field-label">一致性权重</span>';
   const inputOutputShareInput = document.createElement("input");
   inputOutputShareInput.type = "text";
   inputOutputShareInput.value = "0.10";
   inputOutputShareWrap.appendChild(inputOutputShareInput);
 
-  fieldsRow5.append(inputOutputEnableWrap, inputOutputShareWrap);
+  fieldsRow5.append(inputOutputShareWrap);
 
-  params.append(top, fieldsRow1, fieldsRow2, fieldsRow3, fieldsRow4, fieldsRow5);
+  // 第 6 行：启用一致性权重 + 启用原图轮廓
+  const fieldsRow6 = document.createElement("div");
+  fieldsRow6.className = "fields-row";
+
+  const inputOutputEnableWrap = document.createElement("div");
+  inputOutputEnableWrap.className = "field";
+  inputOutputEnableWrap.innerHTML = '<span class="field-label">启用一致性权重</span>';
+  const inputOutputEnableSelect = document.createElement("select");
+  inputOutputEnableSelect.innerHTML =
+    '<option value="false">不启用</option><option value="true">启用</option>';
+  inputOutputEnableWrap.appendChild(inputOutputEnableSelect);
+
+  const sourceContourEnableWrap = document.createElement("div");
+  sourceContourEnableWrap.className = "field";
+  sourceContourEnableWrap.innerHTML = '<span class="field-label">启用原图轮廓</span>';
+  const sourceContourEnableSelect = document.createElement("select");
+  sourceContourEnableSelect.innerHTML =
+    '<option value="false">不启用</option><option value="true">启用</option>';
+  sourceContourEnableWrap.appendChild(sourceContourEnableSelect);
+
+  fieldsRow6.append(inputOutputEnableWrap, sourceContourEnableWrap);
+
+  params.append(top, fieldsRow1, fieldsRow2, fieldsRow3, fieldsRow4, fieldsRow5, fieldsRow6);
 
   // Charts
   const charts = document.createElement("div");
@@ -356,14 +371,15 @@ function createRow(index) {
     { label: "振幅", color: "#0066cc" },
     { label: "直方图", color: "#ff9500" },
     { label: "背景", color: "#af52de" },
-    { label: "输入输出 MSE", color: "#ff3b30" },
+    { label: "一致性", color: "#ff3b30" },
   ], { logScale: true });
   const iouChart = new MiniChart(iouCanvas, [{ label: "IoU", color: "#34c759" }]);
 
   return {
     rootEl: root,
     imgSel, expInput, iterInput, sigmaInput, threshInput,
-    shareHistInput, shareBgInput, inputOutputEnable, inputOutputShareInput,
+    shareHistInput, shareBgInput, inputOutputEnableSelect, inputOutputShareInput,
+    sourceContourEnableSelect,
     statusEl: status,
     previewBtn, realBtn, curveBtn,
     lossChart, iouChart,
@@ -385,8 +401,9 @@ function getConfig(exp) {
     contour_threshold: parseFloat(exp.threshInput.value) || 0.2,
     share_histogram: parseFloat(exp.shareHistInput.value) || 0.5,
     share_background: parseFloat(exp.shareBgInput.value) || 0.1,
-    enable_input_output_loss: exp.inputOutputEnable.checked,
+    enable_input_output_loss: exp.inputOutputEnableSelect.value === "true",
     share_input_output: parseFloat(exp.inputOutputShareInput.value) || 0.1,
+    enable_source_contour: exp.sourceContourEnableSelect.value === "true",
   };
 }
 

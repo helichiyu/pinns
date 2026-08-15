@@ -127,6 +127,8 @@ class ExperimentSocket(tornado.websocket.WebSocketHandler):
         cmd += ["--share-input-output", str(exp["share_input_output"])]
         if exp["enable_input_output_loss"]:
             cmd += ["--enable-input-output-loss"]
+        if exp["enable_source_contour"]:
+            cmd += ["--enable-source-contour"]
         cmd += ["--iterations", str(exp["iterations"])]
         cmd += ["--stream-metrics"]
         # 子进程默认按系统区域编码（GBK）写 stdout，这里按 utf-8 读，
